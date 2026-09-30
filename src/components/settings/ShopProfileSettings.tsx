@@ -21,6 +21,7 @@ import {
   restoreShopDataFromGoogleDrive,
   setGoogleDriveAutoSync,
   setCustomGoogleClientId,
+  initGoogleAuth,
   GoogleDriveStatus
 } from '../../services/googleDriveStorage';
 
@@ -69,6 +70,13 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
 
   useEffect(() => {
     setGdriveStatus(getGoogleDriveStatus());
+    const unsubscribe = initGoogleAuth(
+      () => setGdriveStatus(getGoogleDriveStatus()),
+      () => setGdriveStatus(getGoogleDriveStatus())
+    );
+    return () => {
+      if (typeof unsubscribe === 'function') unsubscribe();
+    };
   }, []);
 
   const showDriveToastMsg = (msg: string, isError = false) => {
@@ -98,8 +106,8 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
   };
 
   // Google Drive Disconnect Handler
-  const handleDisconnectDrive = () => {
-    disconnectGoogleDrive();
+  const handleDisconnectDrive = async () => {
+    await disconnectGoogleDrive();
     setGdriveStatus(getGoogleDriveStatus());
     showDriveToastMsg('Google Drive डिस्कनेक्ट कर दिया गया।');
   };

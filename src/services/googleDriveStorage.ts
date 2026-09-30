@@ -1,20 +1,43 @@
 /**
- * 100% Client-Owned Google Drive Storage & Backup Service
- * Directly interacts with Google Drive API v3 from user's browser using OAuth2.
- * Zero developer intermediate server, zero developer access to shop data.
+ * Google Drive Storage & Cloud Sync Service
+ * Uses official Google Workspace OAuth with Firebase Auth SDK (workspace-integration skill).
+ * Allows shop owners to store complete shop backups safely in their own Google Drive.
  */
 
-import { getCompleteShopData, restoreCompleteBackupJSON, CompleteShopBackup } from './backupService';
+import { initializeApp, getApps, getApp } from 'firebase/app';
+import { 
+  getAuth, 
+  signInWithPopup, 
+  GoogleAuthProvider, 
+  onAuthStateChanged, 
+  signOut,
+  User 
+} from 'firebase/auth';
+import firebaseConfig from '../../firebase-applet-config.json';
+import { getCompleteShopData, restoreCompleteBackupJSON } from './backupService';
 
-const GDRIVE_TOKEN_KEY = 'vyapar_gdrive_access_token';
+// Scopes required for Google Drive backup
+export const SCOPES = ['https://www.googleapis.com/auth/drive.file'];
+
+// Initialize Firebase App & Auth
+const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+const provider = new GoogleAuthProvider();
+provider.addScope('https://www.googleapis.com/auth/drive.file');
+provider.setCustomParameters({
+  prompt: 'select_account',
+});
+
+// In-memory token cache (mandated by workspace-integration skill)
+let cachedAccessToken: string | null = null;
+let isSigningIn = false;
+
 const GDRIVE_EMAIL_KEY = 'vyapar_gdrive_user_email';
 const GDRIVE_FILE_ID_KEY = 'vyapar_gdrive_file_id';
 const GDRIVE_LAST_SYNC_KEY = 'vyapar_gdrive_last_sync';
 const GDRIVE_AUTO_SYNC_KEY = 'vyapar_gdrive_auto_sync';
 const GDRIVE_CUSTOM_CLIENT_ID_KEY = 'vyapar_gdrive_client_id';
-
-// Default Client ID for standard web deployments (can be overridden by user in settings)
-const DEFAULT_CLIENT_ID = '958273618492-vyapar-pro-client.apps.googleusercontent.com';
 
 export interface GoogleDriveStatus {
   isConnected: boolean;
@@ -26,15 +49,17 @@ export interface GoogleDriveStatus {
 }
 
 export function getGoogleDriveStatus(): GoogleDriveStatus {
-  const token = localStorage.getItem(GDRIVE_TOKEN_KEY);
-  const email = localStorage.getItem(GDRIVE_EMAIL_KEY);
+  const currentUser = auth.currentUser;
+  const storedEmail = localStorage.getItem(GDRIVE_EMAIL_KEY);
   const fileId = localStorage.getItem(GDRIVE_FILE_ID_KEY);
   const lastSync = localStorage.getItem(GDRIVE_LAST_SYNC_KEY);
   const autoSync = localStorage.getItem(GDRIVE_AUTO_SYNC_KEY) === 'true';
   const customClientId = localStorage.getItem(GDRIVE_CUSTOM_CLIENT_ID_KEY) || '';
 
+  const email = currentUser?.email || storedEmail;
+
   return {
-    isConnected: Boolean(token && email),
+    isConnected: Boolean(email && (cachedAccessToken || currentUser)),
     userEmail: email,
     fileId,
     lastSyncedAt: lastSync,
@@ -52,123 +77,80 @@ export function setCustomGoogleClientId(clientId: string): void {
 }
 
 /**
- * Initiates Client-Side OAuth2 Token Flow with Google
+ * Initializes Google Auth State listener.
  */
-export async function connectGoogleDrive(customClientId?: string): Promise<{ success: boolean; email?: string; error?: string }> {
-  const clientId = (customClientId || localStorage.getItem(GDRIVE_CUSTOM_CLIENT_ID_KEY) || DEFAULT_CLIENT_ID).trim();
-
-  return new Promise((resolve) => {
-    try {
-      // Check if Google GIS SDK is loaded or load dynamically
-      const redirectUri = window.location.origin;
-      const scope = encodeURIComponent('https://www.googleapis.com/auth/drive.file email profile');
-      const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${encodeURIComponent(
-        clientId
-      )}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=token&scope=${scope}&prompt=select_account`;
-
-      // Open OAuth popup window
-      const width = 500;
-      const height = 650;
-      const left = window.screenX + (window.outerWidth - width) / 2;
-      const top = window.screenY + (window.outerHeight - height) / 2;
-
-      const popup = window.open(
-        authUrl,
-        'google_oauth_popup',
-        `width=${width},height=${height},left=${left},top=${top}`
-      );
-
-      if (!popup) {
-        // If popup blocked, offer manual prompt or direct fallback
-        const manualToken = prompt(
-          'पॉपअप ब्लॉक हो गया! यदि आपके पास Google Access Token है तो यहाँ दर्ज करें (या ब्राउज़र में पॉपअप अनुमति दें):'
-        );
-        if (manualToken && manualToken.trim()) {
-          saveGoogleAuthSession(manualToken.trim(), 'customer@gmail.com').then((r) => resolve(r));
-          return;
-        }
-        resolve({ success: false, error: 'पॉपअप विंडो ब्लॉक हो गई। कृपया ब्राउज़र में पॉपअप अनुमति दें।' });
-        return;
+export const initGoogleAuth = (
+  onAuthSuccess?: (user: User, token: string) => void,
+  onAuthFailure?: () => void
+) => {
+  return onAuthStateChanged(auth, async (user: User | null) => {
+    if (user) {
+      if (cachedAccessToken) {
+        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
+      } else if (!isSigningIn) {
+        // User logged in to Firebase but token expired or on page refresh
+        if (onAuthFailure) onAuthFailure();
       }
-
-      // Check popup location for hash token
-      const checkInterval = setInterval(async () => {
-        try {
-          if (popup.closed) {
-            clearInterval(checkInterval);
-            resolve({ success: false, error: 'Google लॉगिन रद्द कर दिया गया।' });
-            return;
-          }
-
-          if (popup.location && popup.location.hash) {
-            const hash = popup.location.hash.substring(1);
-            const params = new URLSearchParams(hash);
-            const accessToken = params.get('access_token');
-
-            if (accessToken) {
-              clearInterval(checkInterval);
-              popup.close();
-              const result = await saveGoogleAuthSession(accessToken);
-              resolve(result);
-            }
-          }
-        } catch {
-          // Cross-origin access while navigating - ignore until redirect back to origin
-        }
-      }, 500);
-
-      // Timeout after 2 minutes
-      setTimeout(() => {
-        clearInterval(checkInterval);
-        if (!popup.closed) popup.close();
-      }, 120000);
-    } catch (err: any) {
-      resolve({ success: false, error: err.message || 'Google Drive कनेक्ट करने में त्रुटि।' });
+    } else {
+      cachedAccessToken = null;
+      if (onAuthFailure) onAuthFailure();
     }
   });
-}
+};
 
 /**
- * Saves access token, fetches user email, and initializes backup file
+ * Connects Google Drive using official Google OAuth popup (Firebase Auth SDK)
  */
-export async function saveGoogleAuthSession(
-  accessToken: string,
-  fallbackEmail?: string
-): Promise<{ success: boolean; email?: string; error?: string }> {
+export async function connectGoogleDrive(customClientId?: string): Promise<{ success: boolean; email?: string; error?: string }> {
   try {
-    let email = fallbackEmail || 'customer@gmail.com';
+    isSigningIn = true;
 
-    // Fetch user profile from Google UserInfo endpoint
-    try {
-      const userRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (userRes.ok) {
-        const userInfo = await userRes.json();
-        email = userInfo.email || email;
-      }
-    } catch {
-      // Use fallback
+    // If user provided custom client ID for their custom domain, configure it
+    const activeClientId = customClientId || localStorage.getItem(GDRIVE_CUSTOM_CLIENT_ID_KEY) || firebaseConfig.oAuthClientId;
+
+    const result = await signInWithPopup(auth, provider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+
+    if (!credential?.accessToken) {
+      throw new Error('Google से एक्सेस टोकन प्राप्त नहीं हुआ। कृपया पुनः प्रयास करें।');
     }
 
-    localStorage.setItem(GDRIVE_TOKEN_KEY, accessToken);
+    cachedAccessToken = credential.accessToken;
+    const email = result.user.email || 'customer@gmail.com';
+
     localStorage.setItem(GDRIVE_EMAIL_KEY, email);
     localStorage.setItem(GDRIVE_AUTO_SYNC_KEY, 'true');
 
-    // Find or create VyaparPro_Backup.json in customer's drive
-    await findOrCreateDriveBackupFile(accessToken);
+    // Discover or register VyaparPro_Backup.json on user's drive
+    await findOrCreateDriveBackupFile(cachedAccessToken);
 
     return { success: true, email };
-  } catch (err: any) {
-    return { success: false, error: err.message || 'सत्र सुरक्षित करने में त्रुटि।' };
+  } catch (error: any) {
+    console.error('Google Sign In error:', error);
+    let errorMsg = error.message || 'Google Drive कनेक्ट करने में त्रुटि।';
+    if (error.code === 'auth/popup-closed-by-user') {
+      errorMsg = 'Google लॉगिन विंडो बंद कर दी गई।';
+    } else if (error.code === 'auth/popup-blocked') {
+      errorMsg = 'ब्राउज़र में पॉपअप ब्लॉक हो गया। कृपया पॉपअप की अनुमति दें।';
+    } else if (error.code === 'auth/cancelled-popup-request') {
+      errorMsg = 'लॉगिन प्रक्रिया रद्द हो गई।';
+    }
+    return { success: false, error: errorMsg };
+  } finally {
+    isSigningIn = false;
   }
 }
 
 /**
- * Disconnects customer's Google Drive
+ * Disconnects customer's Google Drive session
  */
-export function disconnectGoogleDrive(): void {
-  localStorage.removeItem(GDRIVE_TOKEN_KEY);
+export async function disconnectGoogleDrive(): Promise<void> {
+  try {
+    await signOut(auth);
+  } catch (e) {
+    console.warn('Sign out error:', e);
+  }
+  cachedAccessToken = null;
   localStorage.removeItem(GDRIVE_EMAIL_KEY);
   localStorage.removeItem(GDRIVE_FILE_ID_KEY);
   localStorage.removeItem(GDRIVE_LAST_SYNC_KEY);
@@ -176,7 +158,24 @@ export function disconnectGoogleDrive(): void {
 }
 
 /**
- * Checks for existing VyaparPro_Backup.json or registers a new file ID
+ * Gets active access token or prompts user if missing
+ */
+async function getValidAccessToken(): Promise<string> {
+  if (cachedAccessToken) return cachedAccessToken;
+
+  // Try to re-authenticate if user object is present
+  if (auth.currentUser) {
+    const res = await connectGoogleDrive();
+    if (res.success && cachedAccessToken) {
+      return cachedAccessToken;
+    }
+  }
+
+  throw new Error('Google Drive सत्र समाप्त हो गया है। कृपया "Google Drive से कनेक्ट करें" बटन दबाएं।');
+}
+
+/**
+ * Checks for existing VyaparPro_Backup.json in the user's Drive
  */
 async function findOrCreateDriveBackupFile(accessToken: string): Promise<string | null> {
   try {
@@ -202,15 +201,11 @@ async function findOrCreateDriveBackupFile(accessToken: string): Promise<string 
 }
 
 /**
- * Uploads/Syncs full shop database into the customer's private Google Drive file
+ * Uploads full shop database into the customer's private Google Drive file
  */
 export async function uploadShopDataToGoogleDrive(): Promise<{ success: boolean; message: string; timestamp?: string }> {
-  const token = localStorage.getItem(GDRIVE_TOKEN_KEY);
-  if (!token) {
-    return { success: false, message: 'Google Drive कनेक्ट नहीं है।' };
-  }
-
   try {
+    const token = await getValidAccessToken();
     const backupData = await getCompleteShopData();
     const jsonStr = JSON.stringify(backupData, null, 2);
     let fileId = localStorage.getItem(GDRIVE_FILE_ID_KEY);
@@ -235,8 +230,8 @@ export async function uploadShopDataToGoogleDrive(): Promise<{ success: boolean;
 
       if (!updateRes.ok) {
         if (updateRes.status === 401) {
-          disconnectGoogleDrive();
-          return { success: false, message: 'Google Drive सत्र समाप्त हो गया। कृपया पुनः कनेक्ट करें।' };
+          cachedAccessToken = null;
+          throw new Error('Google Drive सत्र समाप्त हो गया। कृपया पुनः कनेक्ट करें।');
         }
         throw new Error(`Drive Update failed with status ${updateRes.status}`);
       }
@@ -275,8 +270,8 @@ export async function uploadShopDataToGoogleDrive(): Promise<{ success: boolean;
 
       if (!createRes.ok) {
         if (createRes.status === 401) {
-          disconnectGoogleDrive();
-          return { success: false, message: 'Google Drive सत्र समाप्त हो गया। कृपया पुनः कनेक्ट करें।' };
+          cachedAccessToken = null;
+          throw new Error('Google Drive सत्र समाप्त हो गया। कृपया पुनः कनेक्ट करें।');
         }
         throw new Error(`Drive Create failed with status ${createRes.status}`);
       }
@@ -305,14 +300,10 @@ export async function uploadShopDataToGoogleDrive(): Promise<{ success: boolean;
  * Downloads and restores full shop database from customer's Google Drive
  */
 export async function restoreShopDataFromGoogleDrive(): Promise<{ success: boolean; message: string; counts?: any }> {
-  const token = localStorage.getItem(GDRIVE_TOKEN_KEY);
-  let fileId = localStorage.getItem(GDRIVE_FILE_ID_KEY);
-
-  if (!token) {
-    return { success: false, message: 'Google Drive कनेक्ट नहीं है।' };
-  }
-
   try {
+    const token = await getValidAccessToken();
+    let fileId = localStorage.getItem(GDRIVE_FILE_ID_KEY);
+
     if (!fileId) {
       fileId = await findOrCreateDriveBackupFile(token);
     }
@@ -330,8 +321,8 @@ export async function restoreShopDataFromGoogleDrive(): Promise<{ success: boole
 
     if (!downloadRes.ok) {
       if (downloadRes.status === 401) {
-        disconnectGoogleDrive();
-        return { success: false, message: 'Google Drive सत्र समाप्त हो गया। कृपया पुनः कनेक्ट करें।' };
+        cachedAccessToken = null;
+        throw new Error('Google Drive सत्र समाप्त हो गया। कृपया पुनः कनेक्ट करें।');
       }
       throw new Error(`डाउनलोड विफल: HTTP ${downloadRes.status}`);
     }
