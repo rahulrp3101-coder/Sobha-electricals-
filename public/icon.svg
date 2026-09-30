@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <rect width="512" height="512" rx="128" fill="#1E3A8A"/>
+  <rect x="32" y="32" width="448" height="448" rx="96" fill="#1E40AF" stroke="#3B82F6" stroke-width="8"/>
+  <!-- Bill / Invoice Shape -->
+  <path d="M144 112H368C385.673 112 400 126.327 400 144V384L360 360L320 384L280 360L240 384L200 360L160 384L120 360L112 368V144C112 126.327 126.327 112 144 112Z" fill="#FFFFFF"/>
+  <!-- Header Bar -->
+  <rect x="144" y="144" width="224" height="28" rx="6" fill="#E0E7FF"/>
+  <!-- Rupee Symbol in Center -->
+  <path d="M220 200H292M220 224H280M244 200V308M244 224C270 224 284 236 284 254C284 274 266 284 244 284L288 328" stroke="#1E40AF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Accent badge -->
+  <circle cx="380" cy="130" r="34" fill="#10B981" stroke="#FFFFFF" stroke-width="6"/>
+  <path d="M368 130L376 138L394 120" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

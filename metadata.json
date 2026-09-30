@@ -1,0 +1,8 @@
+{
+  "name": "Vyapar Pro - Cloud POS, Invoicing & GST Accounting PWA",
+  "description": "Enterprise cloud-based PWA for GST billing, fast POS counter, real-time inventory tracking, customer khata ledger, and ESC/POS thermal printing.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

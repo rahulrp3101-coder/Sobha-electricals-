@@ -1,0 +1,46 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  }
+  
+  code, pre, .font-mono {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Print Styles */
+@media print {
+  /* Hide all UI elements except the designated print target */
+  body * {
+    visibility: hidden;
+  }
+  
+  #printable-invoice, #printable-invoice * {
+    visibility: visible;
+  }
+  
+  #printable-invoice {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+    padding: 0;
+    background: white !important;
+    color: black !important;
+  }
+
+  @page {
+    margin: 4mm;
+    size: auto;
+  }
+}
+
+/* Thermal receipt specific font simulation */
+.thermal-receipt {
+  font-family: 'JetBrains Mono', 'Courier New', Courier, monospace;
+}
+

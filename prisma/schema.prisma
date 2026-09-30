@@ -1,0 +1,284 @@
+// Vyapar Pro - Production PostgreSQL Schema with Prisma ORM
+// Supports multi-tenant companies, users/roles, GST-compliant parties,
+// real-time inventory ledger with batches, sales/purchase documents,
+// payment reconciliation, expense tracking, and offline synchronization queues.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+enum Role {
+  OWNER
+  ADMIN
+  BILLER
+  ACCOUNTANT
+  STOCK_MANAGER
+}
+
+enum DocumentType {
+  SALES_INVOICE
+  PURCHASE_BILL
+  QUOTATION
+  DELIVERY_CHALLAN
+  CREDIT_NOTE
+  DEBIT_NOTE
+}
+
+enum PartyType {
+  CUSTOMER
+  SUPPLIER
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  BANK_TRANSFER
+  CREDIT
+  SPLIT
+}
+
+enum InvoiceStatus {
+  PAID
+  PARTIAL
+  UNPAID
+  CANCELLED
+}
+
+enum PaymentType {
+  PAYMENT_IN
+  PAYMENT_OUT
+}
+
+enum UnitType {
+  PCS
+  KG
+  PACK
+  BOX
+  MTR
+  LTR
+  BAG
+}
+
+model Company {
+  id             String    @id @default(uuid())
+  name           String
+  legalTradeName String
+  gstin          String    @unique
+  state          String
+  stateCode      String    @db.VarChar(2)
+  address        String
+  city           String
+  pincode        String    @db.VarChar(6)
+  phone          String
+  email          String
+  bankName       String?
+  bankAccountNo  String?
+  bankIfsc       String?
+  bankBranch     String?
+  upiId          String?
+  invoicePrefix  String    @default("INV-2026-")
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  users          User[]
+  parties        Party[]
+  items          Item[]
+  invoices       Invoice[]
+  payments       Payment[]
+  expenses       Expense[]
+
+  @@index([gstin])
+}
+
+model User {
+  id           String    @id @default(uuid())
+  companyId    String
+  company      Company   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  email        String    @unique
+  passwordHash String
+  name         String
+  role         Role      @default(BILLER)
+  phone        String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  invoicesCreated Invoice[]
+  paymentsCreated Payment[]
+
+  @@index([companyId])
+}
+
+model Party {
+  id             String     @id @default(uuid())
+  companyId      String
+  company        Company    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name           String
+  type           PartyType  @default(CUSTOMER)
+  phone          String
+  email          String?
+  gstin          String?    @db.VarChar(15)
+  state          String
+  stateCode      String     @db.VarChar(2)
+  address        String
+  creditLimit    Decimal    @default(0.0) @db.Decimal(12, 2)
+  currentBalance Decimal    @default(0.0) @db.Decimal(12, 2) // positive = receivable, negative = payable
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  invoices       Invoice[]
+  payments       Payment[]
+
+  @@index([companyId, type])
+  @@index([phone])
+}
+
+model Item {
+  id                 String       @id @default(uuid())
+  companyId          String
+  company            Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  name               String
+  category           String
+  sku                String       @unique
+  barcode            String?      @unique
+  hsn                String       @db.VarChar(8)
+  unit               UnitType     @default(PCS)
+  purchasePrice      Decimal      @db.Decimal(12, 2)
+  wholesalePrice     Decimal      @db.Decimal(12, 2)
+  retailPrice        Decimal      @db.Decimal(12, 2)
+  taxRate            Decimal      @default(18.0) @db.Decimal(5, 2)
+  taxInclusive       Boolean      @default(false)
+  currentStock       Decimal      @default(0.0) @db.Decimal(12, 3)
+  lowStockThreshold  Decimal      @default(10.0) @db.Decimal(12, 3)
+  createdAt          DateTime     @default(now())
+  updatedAt          DateTime     @updatedAt
+
+  batches            ItemBatch[]
+  invoiceItems       InvoiceItem[]
+
+  @@index([companyId, category])
+  @@index([barcode])
+}
+
+model ItemBatch {
+  id          String    @id @default(uuid())
+  itemId      String
+  item        Item      @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  batchNumber String
+  mfgDate     DateTime?
+  expiryDate  DateTime
+  quantity    Decimal   @db.Decimal(12, 3)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@unique([itemId, batchNumber])
+  @@index([expiryDate])
+}
+
+model Invoice {
+  id              String        @id @default(uuid())
+  companyId       String
+  company         Company       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  createdById     String?
+  createdBy       User?         @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  partyId         String
+  party           Party         @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  invoiceNumber   String        @unique
+  documentType    DocumentType  @default(SALES_INVOICE)
+  date            DateTime      @default(now())
+  dueDate         DateTime?
+  subTotal        Decimal       @db.Decimal(12, 2) // Taxable value
+  totalDiscount   Decimal       @default(0.0) @db.Decimal(12, 2)
+  totalCgst       Decimal       @default(0.0) @db.Decimal(12, 2)
+  totalSgst       Decimal       @default(0.0) @db.Decimal(12, 2)
+  totalIgst       Decimal       @default(0.0) @db.Decimal(12, 2)
+  totalCess       Decimal       @default(0.0) @db.Decimal(12, 2)
+  totalTax        Decimal       @default(0.0) @db.Decimal(12, 2)
+  roundOff        Decimal       @default(0.0) @db.Decimal(6, 2)
+  grandTotal      Decimal       @db.Decimal(12, 2)
+  receivedAmount  Decimal       @default(0.0) @db.Decimal(12, 2)
+  balanceAmount   Decimal       @default(0.0) @db.Decimal(12, 2)
+  paymentMode     PaymentMode   @default(CASH)
+  status          InvoiceStatus @default(PAID)
+  notes           String?
+  isSynced        Boolean       @default(true)
+  clientSyncId    String?       @unique // Idempotency key from client IndexedDB
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  items           InvoiceItem[]
+  payments        Payment[]
+
+  @@index([companyId, documentType, date])
+  @@index([partyId])
+}
+
+model InvoiceItem {
+  id             String    @id @default(uuid())
+  invoiceId      String
+  invoice        Invoice   @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  itemId         String
+  item           Item      @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  itemName       String
+  hsn            String    @db.VarChar(8)
+  unit           String
+  quantity       Decimal   @db.Decimal(12, 3)
+  unitPrice      Decimal   @db.Decimal(12, 2)
+  discountPercent Decimal  @default(0.0) @db.Decimal(5, 2)
+  discountAmount Decimal   @default(0.0) @db.Decimal(12, 2)
+  taxRate        Decimal   @db.Decimal(5, 2)
+  taxableAmount  Decimal   @db.Decimal(12, 2)
+  cgstAmount     Decimal   @default(0.0) @db.Decimal(12, 2)
+  sgstAmount     Decimal   @default(0.0) @db.Decimal(12, 2)
+  igstAmount     Decimal   @default(0.0) @db.Decimal(12, 2)
+  cessAmount     Decimal   @default(0.0) @db.Decimal(12, 2)
+  totalAmount    Decimal   @db.Decimal(12, 2)
+  batchNumber    String?
+  createdAt      DateTime  @default(now())
+
+  @@index([invoiceId])
+  @@index([itemId])
+}
+
+model Payment {
+  id              String       @id @default(uuid())
+  companyId       String
+  company         Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  partyId         String
+  party           Party        @relation(fields: [partyId], references: [id], onDelete: Restrict)
+  invoiceId       String?
+  invoice         Invoice?     @relation(fields: [invoiceId], references: [id], onDelete: SetNull)
+  createdById     String?
+  createdBy       User?        @relation(fields: [createdById], references: [id], onDelete: SetNull)
+  receiptNumber   String       @unique
+  type            PaymentType  @default(PAYMENT_IN)
+  paymentMode     PaymentMode  @default(CASH)
+  amount          Decimal      @db.Decimal(12, 2)
+  date            DateTime     @default(now())
+  referenceNo     String?
+  notes           String?
+  clientSyncId    String?      @unique
+  createdAt       DateTime     @default(now())
+
+  @@index([companyId, partyId, date])
+}
+
+model Expense {
+  id          String       @id @default(uuid())
+  companyId   String
+  company     Company      @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  category    String
+  title       String
+  amount      Decimal      @db.Decimal(12, 2)
+  paymentMode PaymentMode  @default(CASH)
+  date        DateTime     @default(now())
+  notes       String?
+  createdAt   DateTime     @default(now())
+
+  @@index([companyId, category, date])
+}
