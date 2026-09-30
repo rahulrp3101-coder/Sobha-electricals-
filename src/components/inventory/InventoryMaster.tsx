@@ -3,8 +3,12 @@ import { Item, ItemBatch } from '../../types';
 import { formatINR } from '../../services/gstCalculator';
 import { 
   Package, Search, Plus, AlertTriangle, Clock, 
-  Barcode, Check, Edit, Layers, ArrowUpDown, X, Sparkles, Filter
+  Barcode, Check, Edit, Layers, ArrowUpDown, X, Sparkles, Filter,
+  Camera, RefreshCw
 } from 'lucide-react';
+import { BarcodeCameraModal } from '../pos/BarcodeCameraModal';
+import { playBarcodeBeep } from '../../services/soundEffects';
+import { generateEAN13Barcode, generateRandomSKU } from '../../services/barcodeGenerator';
 
 interface InventoryMasterProps {
   items: Item[];
@@ -22,6 +26,14 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   const [editingItem, setEditingItem] = useState<Item | null>(null);
   const [quickStockItemId, setQuickStockItemId] = useState<string | null>(null);
   const [quickStockQty, setQuickStockQty] = useState<number>(10);
+  const [isScanningBarcodeModal, setIsScanningBarcodeModal] = useState<boolean>(false);
+  const [isScanningSearchModal, setIsScanningSearchModal] = useState<boolean>(false);
+  const [toastMsg, setToastMsg] = useState<string | null>(null);
+
+  const showToast = (msg: string) => {
+    setToastMsg(msg);
+    setTimeout(() => setToastMsg(null), 3000);
+  };
 
   // Form State (New / Edit Item)
   const [name, setName] = useState('');
@@ -45,8 +57,8 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
     setEditingItem(null);
     setName('');
     setCategory('किराना व दैनिक सामान (Groceries)');
-    setSku(`SKU-${String(Date.now()).slice(-6)}`);
-    setBarcode(`890${String(Date.now()).slice(-10)}`);
+    setSku(generateRandomSKU());
+    setBarcode(''); // Start clean so user can scan or generate
     setHsn('19053100');
     setUnit('PCS');
     setPurchasePrice(50);
@@ -229,14 +241,23 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
       <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-col sm:flex-row gap-2.5 sm:items-center justify-between">
         {/* Search */}
         <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 pointer-events-none" />
           <input
             type="text"
             placeholder="नाम, SKU या बारकोड से खोजें..."
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-medium"
+            className="w-full pl-9 pr-20 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-medium"
           />
+          <button
+            type="button"
+            onClick={() => setIsScanningSearchModal(true)}
+            className="absolute right-2 top-1.5 px-2 py-1 bg-white hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-bold transition flex items-center gap-1 border border-slate-300 shadow-2xs"
+            title="कैमरे से बारकोड स्कैन करके खोजें"
+          >
+            <Camera className="w-3.5 h-3.5 text-blue-600" />
+            <span>स्कैन</span>
+          </button>
         </div>
 
         {/* Filter Dropdown & Toggle */}
@@ -500,31 +521,80 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    बारकोड / EAN (Barcode)
+              {/* Barcode & SKU Section with Camera Scanner & Auto Generator */}
+              <div className="bg-blue-50/70 p-3 sm:p-3.5 rounded-2xl border border-blue-200 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="font-extrabold text-slate-800 text-xs flex items-center gap-1.5">
+                    <Barcode className="w-4 h-4 text-blue-600" />
+                    <span>बारकोड / SKU नंबर (Barcode Input)</span>
                   </label>
-                  <input
-                    type="text"
-                    placeholder="उदा. 8901030384712"
-                    value={barcode}
-                    onChange={e => setBarcode(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
-                  />
+
+                  <div className="flex items-center gap-1.5">
+                    {/* Camera Scan Button */}
+                    <button
+                      type="button"
+                      onClick={() => setIsScanningBarcodeModal(true)}
+                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 shadow-2xs active:scale-95"
+                    >
+                      <Camera className="w-3.5 h-3.5" />
+                      <span>📷 बारकोड स्कैन करें</span>
+                    </button>
+
+                    {/* Generate Barcode Button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newCode = generateEAN13Barcode();
+                        setBarcode(newCode);
+                        playBarcodeBeep();
+                        showToast(`नया बारकोड बना: ${newCode}`);
+                      }}
+                      className="px-2.5 py-1 bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 rounded-lg text-xs font-bold transition flex items-center gap-1 active:scale-95 shadow-2xs"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                      <span>Generate Barcode</span>
+                    </button>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    SKU कोड (Item SKU)
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="उदा. AASHIR-5KG"
-                    value={sku}
-                    onChange={e => setSku(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                      बारकोड नंबर (EAN / UPC / QR)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="उदा. 8901030384712 (स्कैन करें या टाइप करें)"
+                      value={barcode}
+                      onChange={e => setBarcode(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600"
+                    />
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">सामान के पैकेट पर छपा 13/12 अंकों का कोड</span>
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-bold text-slate-600 mb-1">
+                      SKU कोड (Item SKU Code)
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="text"
+                        placeholder="उदा. AASHIR-5KG"
+                        value={sku}
+                        onChange={e => setSku(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-blue-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setSku(generateRandomSKU())}
+                        className="p-2 bg-white border border-slate-300 rounded-xl text-slate-600 hover:text-slate-900 hover:bg-slate-50 shadow-2xs"
+                        title="नया SKU कोड जनरेट करें"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <span className="text-[10px] text-slate-500 mt-0.5 block">आंतरिक पहचान कोड</span>
+                  </div>
                 </div>
               </div>
 
@@ -629,6 +699,37 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {/* Barcode Camera Scanner Modal for Item Form */}
+      <BarcodeCameraModal
+        isOpen={isScanningBarcodeModal}
+        onClose={() => setIsScanningBarcodeModal(false)}
+        onDetected={(scannedCode) => {
+          setBarcode(scannedCode);
+          playBarcodeBeep();
+          showToast(`बारकोड स्कैन सफल: ${scannedCode}`);
+          setIsScanningBarcodeModal(false);
+        }}
+      />
+
+      {/* Barcode Camera Scanner Modal for Search Bar */}
+      <BarcodeCameraModal
+        isOpen={isScanningSearchModal}
+        onClose={() => setIsScanningSearchModal(false)}
+        onDetected={(scannedCode) => {
+          setSearchQuery(scannedCode);
+          playBarcodeBeep();
+          showToast(`सर्च बारकोड: ${scannedCode}`);
+          setIsScanningSearchModal(false);
+        }}
+      />
+
+      {/* Toast Notification */}
+      {toastMsg && (
+        <div className="fixed bottom-20 right-4 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-2xl shadow-2xl text-xs font-bold animate-in fade-in slide-in-from-bottom-2 border border-slate-700">
+          {toastMsg}
         </div>
       )}
     </div>

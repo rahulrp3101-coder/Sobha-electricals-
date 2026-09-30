@@ -1,6 +1,24 @@
 <!doctype html>
 <html lang="en">
   <head>
+    <script>
+      (function() {
+        var origError = console.error;
+        console.error = function() {
+          if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('[vite]') !== -1) {
+            return;
+          }
+          return origError.apply(console, arguments);
+        };
+        var origWarn = console.warn;
+        console.warn = function() {
+          if (arguments[0] && typeof arguments[0] === 'string' && arguments[0].indexOf('[vite]') !== -1) {
+            return;
+          }
+          return origWarn.apply(console, arguments);
+        };
+      })();
+    </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
     <title>Vyapar Pro - Cloud POS, Invoicing & GST Accounting PWA</title>

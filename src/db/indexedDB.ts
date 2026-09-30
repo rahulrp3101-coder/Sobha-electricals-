@@ -147,6 +147,17 @@ export async function deleteFromStore(storeName: string, id: string): Promise<vo
   });
 }
 
+export async function clearStore(storeName: string): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    const req = store.clear();
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
 /* ----------------- Business Logic: Invoicing & Inventory Transactions ----------------- */
 
 /**
@@ -208,7 +219,7 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
       };
     }
 
-    // 4. If offline, register in sync_queue
+    // 4. If offline, register in sync_queue, if online push to Cloud SQL backend
     if (!isOnline) {
       const queueItem: SyncQueueItem = {
         id: 'sync-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
@@ -222,6 +233,14 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
     }
 
     tx.oncomplete = () => {
+      if (isOnline) {
+        // Send async push to Cloud SQL PostgreSQL
+        fetch('/api/sync/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ invoices: [invoice] }),
+        }).catch(err => console.warn('Background Cloud SQL sync error:', err));
+      }
       resolve(invoice);
     };
 
@@ -256,6 +275,13 @@ export async function recordPaymentTransaction(payment: PaymentTransaction): Pro
         }
         party.updatedAt = new Date().toISOString();
         partyStore.put(party);
+
+        // Async sync payment and party balance to Cloud SQL
+        fetch('/api/sync/push', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ payments: [payment], parties: [party] }),
+        }).catch(err => console.warn('Background payment sync error:', err));
       }
     };
 
@@ -273,12 +299,32 @@ export async function getPendingSyncCount(): Promise<number> {
 }
 
 /**
- * Simulate background cloud synchronization
+ * Background cloud synchronization with Cloud SQL PostgreSQL
  */
 export async function processSyncQueue(): Promise<{ syncedCount: number }> {
   const db = await getDB();
   const queue = await getAllFromStore<SyncQueueItem>('sync_queue');
   if (queue.length === 0) return { syncedCount: 0 };
+
+  const pendingInvoices: Invoice[] = [];
+  for (const item of queue) {
+    if (item.entity === 'INVOICE') {
+      pendingInvoices.push(item.payload);
+    }
+  }
+
+  // Push to Cloud SQL
+  try {
+    if (pendingInvoices.length > 0) {
+      await fetch('/api/sync/push', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ invoices: pendingInvoices }),
+      });
+    }
+  } catch (err) {
+    console.warn('Sync push to Cloud SQL failed, will retry later', err);
+  }
 
   return new Promise((resolve) => {
     const tx = db.transaction(['sync_queue', 'invoices'], 'readwrite');

@@ -521,7 +521,7 @@ export const DesktopPOS: React.FC<DesktopPOSProps> = ({
                     addItemToCart(searchResults[selectedSearchIndex]);
                   }
                 }}
-                placeholder="सामान खोजें या बारकोड स्कैन करें (F2)..."
+                placeholder="सामान खोजें या बारकोड स्कैन करें..."
                 className="w-full bg-transparent text-xs sm:text-sm text-slate-900 placeholder-slate-400 focus:outline-none font-medium"
               />
 

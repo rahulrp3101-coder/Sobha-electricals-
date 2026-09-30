@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Camera, X, RefreshCw, Zap, AlertCircle } from 'lucide-react';
+import { Camera, X, RefreshCw, Zap, AlertCircle, Check } from 'lucide-react';
+import { Html5Qrcode, Html5QrcodeSupportedFormats } from 'html5-qrcode';
 
 interface BarcodeCameraModalProps {
   isOpen: boolean;
@@ -12,188 +13,178 @@ export const BarcodeCameraModal: React.FC<BarcodeCameraModalProps> = ({
   onClose,
   onDetected,
 }) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>('');
   const [manualCode, setManualCode] = useState<string>('');
-  const [isScanning, setIsScanning] = useState<boolean>(true);
-  const streamRef = useRef<MediaStream | null>(null);
+  const [isInitializing, setIsInitializing] = useState<boolean>(true);
+  const scannerRef = useRef<Html5Qrcode | null>(null);
+  const isStartedRef = useRef<boolean>(false);
 
   useEffect(() => {
-    if (!isOpen) {
-      stopCamera();
-      return;
-    }
+    if (!isOpen) return;
 
-    startCamera();
+    let isMounted = true;
+    const scannerId = 'barcode-reader-viewport';
+
+    const startScanner = async () => {
+      setIsInitializing(true);
+      setErrorMsg('');
+
+      try {
+        // Wait for DOM element
+        await new Promise((r) => setTimeout(r, 150));
+        if (!isMounted) return;
+
+        const html5QrCode = new Html5Qrcode(scannerId, {
+          formatsToSupport: [
+            Html5QrcodeSupportedFormats.EAN_13,
+            Html5QrcodeSupportedFormats.EAN_8,
+            Html5QrcodeSupportedFormats.CODE_128,
+            Html5QrcodeSupportedFormats.CODE_39,
+            Html5QrcodeSupportedFormats.UPC_A,
+            Html5QrcodeSupportedFormats.UPC_E,
+            Html5QrcodeSupportedFormats.QR_CODE,
+          ],
+          verbose: false,
+        });
+
+        scannerRef.current = html5QrCode;
+
+        const config = {
+          fps: 15,
+          qrbox: { width: 260, height: 180 },
+          aspectRatio: 1.333333,
+        };
+
+        await html5QrCode.start(
+          { facingMode: 'environment' },
+          config,
+          (decodedText) => {
+            if (isMounted) {
+              stopScanner();
+              onDetected(decodedText.trim());
+              onClose();
+            }
+          },
+          () => {
+            // Frame scan failure - expected while seeking barcode
+          }
+        );
+
+        if (isMounted) {
+          isStartedRef.current = true;
+          setIsInitializing(false);
+        }
+      } catch (err: any) {
+        if (isMounted) {
+          console.warn('html5-qrcode scanner start error:', err);
+          setIsInitializing(false);
+          setErrorMsg(err?.message || 'कैमरा शुरू नहीं हो सका। कृपया कैमरा परमिशन (Permission) दें या नीचे बारकोड नंबर डालें।');
+        }
+      }
+    };
+
+    startScanner();
 
     return () => {
-      stopCamera();
+      isMounted = false;
+      stopScanner();
     };
   }, [isOpen]);
 
-  const startCamera = async () => {
-    setErrorMsg('');
-    try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-        throw new Error('Camera access not supported by browser.');
+  const stopScanner = async () => {
+    if (scannerRef.current && isStartedRef.current) {
+      try {
+        await scannerRef.current.stop();
+        scannerRef.current.clear();
+      } catch {
+        // ignore
+      } finally {
+        isStartedRef.current = false;
+        scannerRef.current = null;
       }
-
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'environment' },
-      });
-      streamRef.current = stream;
-
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-        setHasPermission(true);
-        initBarcodeDetector();
-      }
-    } catch (err: any) {
-      console.warn('Camera stream error:', err);
-      setHasPermission(false);
-      setErrorMsg(err.message || 'Unable to access device camera. Please allow permissions.');
     }
   };
 
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
-    }
-  };
-
-  const initBarcodeDetector = () => {
-    if ('BarcodeDetector' in window) {
-      const barcodeDetector = new (window as any).BarcodeDetector({
-        formats: ['ean_13', 'ean_8', 'code_128', 'code_39', 'qr_code', 'upc_a'],
-      });
-
-      const detectInterval = setInterval(async () => {
-        if (!videoRef.current || !isScanning || videoRef.current.readyState < 2) return;
-        try {
-          const barcodes = await barcodeDetector.detect(videoRef.current);
-          if (barcodes.length > 0) {
-            const rawValue = barcodes[0].rawValue;
-            clearInterval(detectInterval);
-            setIsScanning(false);
-            onDetected(rawValue);
-            onClose();
-          }
-        } catch {
-          // ignore frames where nothing detected
-        }
-      }, 250);
-
-      return () => clearInterval(detectInterval);
-    }
+  const handleManualSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!manualCode.trim()) return;
+    stopScanner();
+    onDetected(manualCode.trim());
+    onClose();
   };
 
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-xs p-4">
-      <div className="relative w-full max-w-md rounded-2xl bg-slate-900 border border-slate-700 text-white shadow-2xl overflow-hidden">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-xs p-4">
+      <div className="relative w-full max-w-md rounded-3xl bg-slate-900 border border-slate-700 text-white shadow-2xl overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-slate-800">
           <div className="flex items-center gap-2">
-            <Camera className="w-5 h-5 text-blue-400" />
-            <span className="font-semibold text-sm">Scan Product Barcode</span>
+            <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center">
+              <Camera className="w-4 h-4 text-white" />
+            </div>
+            <div>
+              <h3 className="font-bold text-sm text-white">कैमरा बारकोड स्कैनर</h3>
+              <p className="text-[10px] text-slate-400">सामान के बारकोड को कैमरे के सामने लाएं</p>
+            </div>
           </div>
           <button
-            onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
+            onClick={() => {
+              stopScanner();
+              onClose();
+            }}
+            className="p-1.5 rounded-full text-slate-400 hover:text-white hover:bg-slate-800 transition"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
-        {/* Viewfinder Area */}
-        <div className="relative w-full h-72 bg-black flex items-center justify-center overflow-hidden">
-          {hasPermission ? (
-            <>
-              <video
-                ref={videoRef}
-                className="w-full h-full object-cover"
-                playsInline
-                muted
-              />
-              {/* Laser Target Reticle */}
-              <div className="absolute inset-x-8 top-16 bottom-16 border-2 border-blue-400/80 rounded-xl pointer-events-none flex items-center justify-center shadow-[0_0_15px_rgba(59,130,246,0.5)]">
-                <div className="w-full h-0.5 bg-red-500 animate-pulse" />
-              </div>
-              <div className="absolute bottom-2 text-xs text-slate-300 bg-black/60 px-3 py-1 rounded-full">
-                Align barcode inside the blue box
-              </div>
-            </>
-          ) : (
-            <div className="p-6 text-center">
-              <AlertCircle className="w-10 h-10 text-amber-400 mx-auto mb-2" />
-              <p className="text-sm text-slate-300 mb-2">Camera permission required or device unavailable.</p>
-              <p className="text-xs text-slate-500 mb-4">{errorMsg}</p>
-              <button
-                onClick={startCamera}
-                className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-600 rounded-lg text-xs font-medium text-white hover:bg-blue-500"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                Retry Camera
-              </button>
+        {/* Viewport Box */}
+        <div className="relative bg-black w-full min-h-[280px] flex items-center justify-center overflow-hidden">
+          <div id="barcode-reader-viewport" className="w-full h-full" />
+
+          {/* Initializing Spinner */}
+          {isInitializing && !errorMsg && (
+            <div className="absolute inset-0 bg-slate-900/90 flex flex-col items-center justify-center p-4 text-center space-y-2 z-10">
+              <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
+              <p className="text-xs font-semibold text-slate-300">कैमरा लोड हो रहा है...</p>
+            </div>
+          )}
+
+          {/* Error Banner */}
+          {errorMsg && (
+            <div className="absolute inset-0 bg-slate-900/95 flex flex-col items-center justify-center p-6 text-center space-y-3 z-10">
+              <AlertCircle className="w-10 h-10 text-amber-500" />
+              <div className="text-xs text-slate-300 leading-relaxed">{errorMsg}</div>
+              <p className="text-[11px] text-slate-400">आप नीचे दिए गए बॉक्स में बारकोड या SKU टाइप कर सकते हैं।</p>
             </div>
           )}
         </div>
 
-        {/* Quick Demo Scans & Manual Input */}
-        <div className="p-4 bg-slate-800/80 border-t border-slate-700 space-y-3">
-          <div className="flex items-center gap-2">
+        {/* Manual Barcode / SKU Entry Fallback */}
+        <div className="p-4 bg-slate-950 border-t border-slate-800 space-y-3">
+          <form onSubmit={handleManualSubmit} className="flex gap-2">
             <input
               type="text"
-              placeholder="Or enter barcode / SKU manually..."
+              placeholder="बारकोड या SKU टाइप करें..."
               value={manualCode}
               onChange={(e) => setManualCode(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && manualCode.trim()) {
-                  onDetected(manualCode.trim());
-                  onClose();
-                }
-              }}
-              className="flex-1 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500 font-mono"
+              className="flex-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-blue-500"
             />
             <button
-              onClick={() => {
-                if (manualCode.trim()) {
-                  onDetected(manualCode.trim());
-                  onClose();
-                }
-              }}
-              className="px-3 py-2 bg-blue-600 rounded-lg text-xs font-semibold text-white hover:bg-blue-500 transition"
+              type="submit"
+              disabled={!manualCode.trim()}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shrink-0"
             >
-              Add
+              <span>जोड़ें</span>
+              <Check className="w-3.5 h-3.5" />
             </button>
-          </div>
+          </form>
 
-          <div>
-            <div className="text-[11px] text-slate-400 mb-1.5">Quick Barcode Simulator (Click to test):</div>
-            <div className="flex flex-wrap gap-1.5">
-              {[
-                { code: '8901030384712', name: 'Tata Salt' },
-                { code: '8906007280014', name: 'Fortune Oil' },
-                { code: '8901736128491', name: 'Havells LED' },
-                { code: '8904257100422', name: 'Syska PB' },
-              ].map((b) => (
-                <button
-                  key={b.code}
-                  onClick={() => {
-                    onDetected(b.code);
-                    onClose();
-                  }}
-                  className="px-2 py-1 bg-slate-700 hover:bg-slate-600 rounded text-[11px] text-slate-200 transition font-mono"
-                >
-                  {b.name} ({b.code.slice(-4)})
-                </button>
-              ))}
-            </div>
-          </div>
+          <p className="text-[10px] text-center text-slate-500">
+            EAN-13, EAN-8, Code-128, Code-39, UPC और QR कोड समर्थित हैं।
+          </p>
         </div>
       </div>
     </div>

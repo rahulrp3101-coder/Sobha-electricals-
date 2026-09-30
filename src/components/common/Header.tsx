@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { 
   ShoppingBag, FileText, Package, Users, BarChart3, 
   Layers, Monitor, Smartphone, RefreshCw, Wifi, WifiOff, Download,
-  Settings, ArrowDownLeft, Store
+  Settings, ArrowDownLeft, Store, LogOut, ShieldCheck
 } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 import { CompanyProfile } from '../../types';
 
-export type MainTab = 'POS' | 'INVOICES' | 'INVENTORY' | 'PARTIES' | 'REPORTS' | 'SETTINGS' | 'ARCHITECTURE';
+export type MainTab = 'POS' | 'INVENTORY' | 'PARTIES' | 'SETTINGS' | 'INVOICES' | 'REPORTS' | 'ARCHITECTURE';
 
 interface HeaderProps {
   activeTab: MainTab;
@@ -20,6 +20,8 @@ interface HeaderProps {
   onTriggerSync: () => void;
   company?: CompanyProfile;
   onOpenPaymentIn?: () => void;
+  adminUsername?: string;
+  onLogout?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -33,9 +35,19 @@ export const Header: React.FC<HeaderProps> = ({
   onTriggerSync,
   company,
   onOpenPaymentIn,
+  adminUsername = 'admin',
+  onLogout,
 }) => {
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
+  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+
+  const mainTabs = [
+    { id: 'POS' as MainTab, label: 'बिलिंग (POS)', icon: ShoppingBag },
+    { id: 'INVENTORY' as MainTab, label: 'स्टॉक / इन्वेंट्री', icon: Package },
+    { id: 'PARTIES' as MainTab, label: 'ग्राहक खाता / पार्टी', icon: Users },
+    { id: 'SETTINGS' as MainTab, label: 'सेटिंग्स व प्रोफ़ाइल', icon: Settings },
+  ];
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 px-3 sm:px-6 flex items-center justify-between z-30 select-none shadow-2xs">
@@ -51,7 +63,7 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
           <div className="min-w-0 flex flex-col justify-center">
             <div className="flex items-center gap-1.5">
-              <span className="text-sm sm:text-base font-extrabold tracking-tight text-slate-900 group-hover:text-blue-700 transition truncate max-w-[150px] sm:max-w-[220px]">
+              <span className="text-sm sm:text-base font-extrabold tracking-tight text-slate-900 group-hover:text-blue-700 transition truncate max-w-[140px] sm:max-w-[200px]">
                 {company?.name || 'Vyapar Pro'}
               </span>
               <span className="hidden sm:inline-block text-[9px] bg-blue-50 text-blue-800 font-bold px-1.5 py-0.5 rounded font-mono">
@@ -59,7 +71,7 @@ export const Header: React.FC<HeaderProps> = ({
               </span>
             </div>
             {company?.state && (
-              <span className="text-[10px] text-slate-500 font-medium truncate hidden xs:block">
+              <span className="text-[10px] text-slate-500 font-medium truncate hidden sm:block">
                 राज्य: <strong className="text-slate-700">{company.stateCode}-{company.state}</strong>
                 {company.gstin && <span className="ml-1.5 font-mono text-[9px] text-slate-400">GSTIN: {company.gstin}</span>}
               </span>
@@ -68,24 +80,16 @@ export const Header: React.FC<HeaderProps> = ({
         </a>
       </div>
 
-      {/* Zone 2: Navigation Links (Desktop) */}
+      {/* Zone 2: Navigation Links (Desktop) - 4 Primary Sections */}
       <nav className="hidden md:flex items-center gap-1 sm:gap-1.5 text-xs font-semibold text-slate-600">
-        {[
-          { id: 'POS', label: 'बिलिंग (POS)', icon: ShoppingBag },
-          { id: 'INVENTORY', label: 'इन्वेंट्री (Stock)', icon: Package },
-          { id: 'PARTIES', label: 'खाता (Parties)', icon: Users },
-          { id: 'INVOICES', label: 'बिलों की सूची', icon: FileText },
-          { id: 'REPORTS', label: 'रिपोर्ट्स (GST)', icon: BarChart3 },
-          { id: 'SETTINGS', label: 'दुकान सेटिंग', icon: Settings },
-          { id: 'ARCHITECTURE', label: 'आर्किटेक्चर', icon: Layers },
-        ].map((item) => {
+        {mainTabs.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
           return (
             <button
               key={item.id}
-              onClick={() => onSelectTab(item.id as MainTab)}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition ${
+              onClick={() => onSelectTab(item.id)}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-lg transition ${
                 isActive
                   ? 'bg-slate-900 text-white shadow-2xs font-bold'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -96,41 +100,45 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           );
         })}
+
+        {/* Secondary: Invoices & Reports */}
+        <button
+          onClick={() => onSelectTab('INVOICES')}
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
+            activeTab === 'INVOICES'
+              ? 'bg-slate-900 text-white shadow-2xs font-bold'
+              : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+          }`}
+        >
+          <FileText className="w-3.5 h-3.5" />
+          <span>बिल लिस्ट</span>
+        </button>
+
+        <button
+          onClick={() => onSelectTab('REPORTS')}
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
+            activeTab === 'REPORTS'
+              ? 'bg-slate-900 text-white shadow-2xs font-bold'
+              : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+          }`}
+        >
+          <BarChart3 className="w-3.5 h-3.5" />
+          <span>GST रिपोर्ट्स</span>
+        </button>
       </nav>
 
-      {/* Zone 3: Quick Action Buttons (Payment In, Sync, POS Toggle, PWA) */}
+      {/* Zone 3: Quick Action Buttons, Admin Status, and Logout */}
       <div className="flex items-center gap-1.5 sm:gap-2">
         {/* Quick Payment In Button */}
         {onOpenPaymentIn && (
           <button
             onClick={onOpenPaymentIn}
-            className="flex items-center gap-1 px-2 sm:px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition shadow-2xs"
+            className="flex items-center gap-1 px-2 sm:px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition shadow-2xs active:scale-95"
             title="ग्राहक से पैसे प्राप्त होने की एंट्री करें"
           >
             <ArrowDownLeft className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">पैसे मिले (Payment In)</span>
             <span className="sm:hidden">+पैसे</span>
-          </button>
-        )}
-
-        {/* Desktop vs Mobile POS Mode Toggle (Visible on POS tab only) */}
-        {activeTab === 'POS' && (
-          <button
-            onClick={onTogglePosMode}
-            className="hidden sm:flex items-center gap-1 px-2 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded-lg text-xs font-medium text-slate-700 transition"
-            title="Toggle Desktop Keyboard POS / Mobile Touch View"
-          >
-            {posMode === 'DESKTOP' ? (
-              <>
-                <Monitor className="w-3.5 h-3.5 text-blue-600" />
-                <span className="hidden lg:inline">Desktop POS</span>
-              </>
-            ) : (
-              <>
-                <Smartphone className="w-3.5 h-3.5 text-blue-600" />
-                <span className="hidden lg:inline">Mobile View</span>
-              </>
-            )}
           </button>
         )}
 
@@ -175,26 +183,57 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        {/* Settings button on mobile header */}
-        <button
-          onClick={() => onSelectTab('SETTINGS')}
-          className="md:hidden p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
-          title="दुकान सेटिंग्स"
-        >
-          <Settings className="w-4 h-4" />
-        </button>
+        {/* Admin Badge & Logout Button */}
+        <div className="flex items-center gap-1 pl-1 border-l border-slate-200">
+          <div className="hidden lg:flex items-center gap-1 px-2 py-1 bg-slate-100 rounded-lg text-[11px] font-bold text-slate-700">
+            <ShieldCheck className="w-3.5 h-3.5 text-blue-600" />
+            <span>{adminUsername}</span>
+          </div>
 
-        {/* iOS Install Prompt */}
-        {!isInstalled && isIOS && (
-          <button
-            onClick={() => setShowIOSGuide(true)}
-            className="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50 transition"
-          >
-            <Download className="w-3.5 h-3.5 text-slate-500" />
-            <span className="hidden sm:inline">iOS</span>
-          </button>
-        )}
+          {onLogout && (
+            <button
+              onClick={() => setShowLogoutConfirm(true)}
+              className="p-1.5 sm:px-2.5 sm:py-1.5 text-slate-500 hover:text-red-700 hover:bg-red-50 rounded-lg transition text-xs font-bold flex items-center gap-1"
+              title="एडमिन लॉग आउट करें"
+            >
+              <LogOut className="w-3.5 h-3.5 text-red-500" />
+              <span className="hidden sm:inline">लॉग आउट</span>
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Logout Confirmation Modal */}
+      {showLogoutConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4">
+          <div className="w-full max-w-sm rounded-2xl bg-white p-5 shadow-2xl border border-slate-200 text-center space-y-3">
+            <div className="w-12 h-12 rounded-full bg-red-100 text-red-600 mx-auto flex items-center justify-center">
+              <LogOut className="w-6 h-6" />
+            </div>
+            <h3 className="text-base font-bold text-slate-900">लॉग आउट करना चाहते हैं?</h3>
+            <p className="text-xs text-slate-500">
+              लॉग आउट करने पर आपको दोबारा यूजरनेम और पासवर्ड डालकर लॉगिन करना होगा।
+            </p>
+            <div className="grid grid-cols-2 gap-2 pt-2">
+              <button
+                onClick={() => setShowLogoutConfirm(false)}
+                className="py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
+              >
+                रद्द करें
+              </button>
+              <button
+                onClick={() => {
+                  setShowLogoutConfirm(false);
+                  if (onLogout) onLogout();
+                }}
+                className="py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-bold transition shadow-xs"
+              >
+                हाँ, लॉग आउट करें
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* iOS Safari Installation Guide Modal */}
       {showIOSGuide && (
