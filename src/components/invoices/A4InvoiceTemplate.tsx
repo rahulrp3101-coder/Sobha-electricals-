@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Invoice, CompanyProfile } from '../../types';
 import { formatINR, numberToWordsINR } from '../../services/gstCalculator';
+import { generateUpiQrDataUrl } from '../../services/upiQrService';
 import { Printer, Download, Share2, ArrowLeft } from 'lucide-react';
 import { generateWhatsAppInvoiceURL } from '../../services/whatsappShare';
 
@@ -16,6 +17,15 @@ export const A4InvoiceTemplate: React.FC<A4InvoiceTemplateProps> = ({
   onBack,
 }) => {
   const isInterState = invoice.partyStateCode.trim() !== company.stateCode.trim();
+  const [upiQrUrl, setUpiQrUrl] = useState<string>('');
+
+  useEffect(() => {
+    if (company.upiId) {
+      generateUpiQrDataUrl(company.upiId, company.name, invoice.grandTotal, invoice.invoiceNumber, 160)
+        .then(url => setUpiQrUrl(url))
+        .catch(err => console.warn('QR gen err:', err));
+    }
+  }, [company.upiId, company.name, invoice.grandTotal, invoice.invoiceNumber]);
 
   const handlePrint = () => {
     window.print();
@@ -187,26 +197,38 @@ export const A4InvoiceTemplate: React.FC<A4InvoiceTemplateProps> = ({
 
         {/* Totals & Bank Details Row */}
         <div className="grid grid-cols-2 gap-6 items-start mb-8 text-xs">
-          {/* Left: Bank Details & Amount in Words */}
+          {/* Left: Bank Details & UPI QR & Amount in Words */}
           <div className="space-y-3">
-            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-              <h4 className="font-bold text-[11px] uppercase tracking-wider text-slate-600 mb-1">Bank Payment Details</h4>
-              <div className="grid grid-cols-2 gap-y-0.5 text-slate-700">
-                <span className="text-slate-400">Bank Name:</span>
-                <span className="font-medium">{company.bankName}</span>
-                <span className="text-slate-400">A/C Number:</span>
-                <span className="font-mono font-bold">{company.bankAccountNo}</span>
-                <span className="text-slate-400">IFSC Code:</span>
-                <span className="font-mono font-bold">{company.bankIfsc}</span>
-                <span className="text-slate-400">Branch:</span>
-                <span>{company.bankBranch}</span>
-                {company.upiId && (
-                  <>
-                    <span className="text-slate-400">UPI VPA:</span>
-                    <span className="font-mono text-blue-700 font-semibold">{company.upiId}</span>
-                  </>
-                )}
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 flex items-center justify-between gap-3">
+              <div className="flex-1">
+                <h4 className="font-bold text-[11px] uppercase tracking-wider text-slate-600 mb-1">Bank Payment Details</h4>
+                <div className="grid grid-cols-2 gap-y-0.5 text-slate-700 text-[11px]">
+                  <span className="text-slate-400">Bank Name:</span>
+                  <span className="font-medium">{company.bankName}</span>
+                  <span className="text-slate-400">A/C Number:</span>
+                  <span className="font-mono font-bold">{company.bankAccountNo}</span>
+                  <span className="text-slate-400">IFSC Code:</span>
+                  <span className="font-mono font-bold">{company.bankIfsc}</span>
+                  <span className="text-slate-400">Branch:</span>
+                  <span>{company.bankBranch}</span>
+                  {company.upiId && (
+                    <>
+                      <span className="text-slate-400">UPI ID:</span>
+                      <span className="font-mono text-blue-700 font-semibold">{company.upiId}</span>
+                    </>
+                  )}
+                </div>
               </div>
+
+              {/* Dynamic QR Box */}
+              {company.upiId && upiQrUrl && (
+                <div className="text-center p-2 bg-white rounded-xl border border-slate-300 shrink-0">
+                  <div className="w-20 h-20">
+                    <img src={upiQrUrl} alt="UPI QR" className="w-full h-full object-contain" />
+                  </div>
+                  <span className="text-[9px] font-bold text-slate-600 block mt-0.5">Scan &amp; Pay UPI</span>
+                </div>
+              )}
             </div>
 
             <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-100">

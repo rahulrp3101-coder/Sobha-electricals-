@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShoppingBag, Package, Users, Settings } from 'lucide-react';
+import { ShoppingBag, Package, Users, Settings, Building2 } from 'lucide-react';
 import { MainTab } from './Header';
 
 interface BottomNavProps {
@@ -16,34 +16,40 @@ export const BottomNav: React.FC<BottomNavProps> = ({
   const navItems = [
     {
       id: 'POS' as MainTab,
-      label: 'बिलिंग',
-      sublabel: 'POS Billing',
+      label: 'Billing',
+      sublabel: 'बिलिंग',
       icon: ShoppingBag,
     },
     {
+      id: 'PURCHASES' as MainTab,
+      label: 'Purchases',
+      sublabel: 'खरीद',
+      icon: Building2,
+    },
+    {
       id: 'INVENTORY' as MainTab,
-      label: 'स्टॉक / इन्वेंट्री',
-      sublabel: 'Stock Mgt',
+      label: 'Inventory',
+      sublabel: 'स्टॉक',
       icon: Package,
       badge: lowStockCount > 0 ? lowStockCount : undefined,
     },
     {
       id: 'PARTIES' as MainTab,
-      label: 'ग्राहक खाता',
-      sublabel: 'Udhar Khata',
+      label: 'Customers',
+      sublabel: 'खाता',
       icon: Users,
     },
     {
       id: 'SETTINGS' as MainTab,
-      label: 'सेटिंग्स व प्रोफ़ाइल',
-      sublabel: 'Shop Settings',
+      label: 'Settings',
+      sublabel: 'सेटिंग्स',
       icon: Settings,
     },
   ];
 
   return (
     <nav className="fixed bottom-0 inset-x-0 bg-white border-t border-slate-200 z-40 md:hidden shadow-[0_-4px_16px_rgba(0,0,0,0.08)] select-none safe-area-pb">
-      <div className="grid grid-cols-4 h-16 items-center px-1">
+      <div className="grid grid-cols-5 h-16 items-center px-0.5">
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = activeTab === item.id;
@@ -59,22 +65,22 @@ export const BottomNav: React.FC<BottomNavProps> = ({
             >
               {/* Active top indicator pip */}
               {isActive && (
-                <span className="absolute top-0 w-10 h-1 bg-blue-700 rounded-b-full shadow-xs" />
+                <span className="absolute top-0 w-8 h-1 bg-blue-700 rounded-b-full shadow-xs" />
               )}
 
               <div className="relative">
-                <Icon className={`w-5 h-5 ${isActive ? 'stroke-[2.5px] scale-110 text-blue-700' : 'stroke-[1.8px]'}`} />
+                <Icon className={`w-4 h-4 sm:w-5 sm:h-5 ${isActive ? 'stroke-[2.5px] scale-110 text-blue-700' : 'stroke-[1.8px]'}`} />
                 {item.badge !== undefined && (
-                  <span className="absolute -top-1.5 -right-2.5 bg-red-600 text-white text-[9px] font-black rounded-full h-4 min-w-4 px-1 flex items-center justify-center animate-pulse shadow-2xs">
+                  <span className="absolute -top-1.5 -right-2.5 bg-red-600 text-white text-[9px] font-black rounded-full h-3.5 min-w-3.5 px-0.5 flex items-center justify-center animate-pulse shadow-2xs">
                     {item.badge}
                   </span>
                 )}
               </div>
 
-              <span className="text-[11px] mt-1 leading-tight tracking-tight text-center truncate max-w-full px-1">
+              <span className="text-[10px] sm:text-[11px] mt-1 leading-tight tracking-tight text-center truncate max-w-full px-0.5 font-bold">
                 {item.label}
               </span>
-              <span className="text-[8px] text-slate-400 -mt-0.5 scale-90">
+              <span className="text-[8px] text-slate-400 -mt-0.5">
                 {item.sublabel}
               </span>
             </button>

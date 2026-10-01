@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { 
   ShoppingBag, FileText, Package, Users, BarChart3, 
   Layers, Monitor, Smartphone, RefreshCw, Wifi, WifiOff, Download,
-  Settings, ArrowDownLeft, Store, LogOut, ShieldCheck
+  Settings, ArrowDownLeft, Store, LogOut, ShieldCheck, Building2
 } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 import { CompanyProfile } from '../../types';
 
-export type MainTab = 'POS' | 'INVENTORY' | 'PARTIES' | 'SETTINGS' | 'INVOICES' | 'REPORTS' | 'ARCHITECTURE';
+export type MainTab = 'POS' | 'PURCHASES' | 'INVENTORY' | 'PARTIES' | 'SETTINGS' | 'INVOICES' | 'REPORTS' | 'ARCHITECTURE';
 
 interface HeaderProps {
   activeTab: MainTab;
@@ -43,10 +43,10 @@ export const Header: React.FC<HeaderProps> = ({
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
 
   const mainTabs = [
-    { id: 'POS' as MainTab, label: 'बिलिंग (POS)', icon: ShoppingBag },
-    { id: 'INVENTORY' as MainTab, label: 'स्टॉक / इन्वेंट्री', icon: Package },
-    { id: 'PARTIES' as MainTab, label: 'ग्राहक खाता / पार्टी', icon: Users },
-    { id: 'SETTINGS' as MainTab, label: 'सेटिंग्स व प्रोफ़ाइल', icon: Settings },
+    { id: 'POS' as MainTab, label: 'Billing (बिलिंग)', icon: ShoppingBag },
+    { id: 'PURCHASES' as MainTab, label: 'Purchases (खरीद)', icon: Building2 },
+    { id: 'INVENTORY' as MainTab, label: 'Inventory (स्टॉक)', icon: Package },
+    { id: 'PARTIES' as MainTab, label: 'Customers (ग्राहक खाता)', icon: Users },
   ];
 
   return (
@@ -72,7 +72,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
             {company?.state && (
               <span className="text-[10px] text-slate-500 font-medium truncate hidden sm:block">
-                राज्य: <strong className="text-slate-700">{company.stateCode}-{company.state}</strong>
+                State: <strong className="text-slate-700">{company.stateCode}-{company.state}</strong>
                 {company.gstin && <span className="ml-1.5 font-mono text-[9px] text-slate-400">GSTIN: {company.gstin}</span>}
               </span>
             )}
@@ -80,7 +80,7 @@ export const Header: React.FC<HeaderProps> = ({
         </a>
       </div>
 
-      {/* Zone 2: Navigation Links (Desktop) - 4 Primary Sections */}
+      {/* Zone 2: Navigation Links (Desktop) - Primary Sections */}
       <nav className="hidden md:flex items-center gap-1 sm:gap-1.5 text-xs font-semibold text-slate-600">
         {mainTabs.map((item) => {
           const Icon = item.icon;
@@ -101,7 +101,7 @@ export const Header: React.FC<HeaderProps> = ({
           );
         })}
 
-        {/* Secondary: Invoices & Reports */}
+        {/* Secondary: Invoices, Reports & Settings */}
         <button
           onClick={() => onSelectTab('INVOICES')}
           className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
@@ -111,7 +111,7 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
         >
           <FileText className="w-3.5 h-3.5" />
-          <span>बिल लिस्ट</span>
+          <span>Invoices (बिल सूची)</span>
         </button>
 
         <button
@@ -123,7 +123,19 @@ export const Header: React.FC<HeaderProps> = ({
           }`}
         >
           <BarChart3 className="w-3.5 h-3.5" />
-          <span>GST रिपोर्ट्स</span>
+          <span>Reports (GST)</span>
+        </button>
+
+        <button
+          onClick={() => onSelectTab('SETTINGS')}
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
+            activeTab === 'SETTINGS'
+              ? 'bg-slate-900 text-white shadow-2xs font-bold'
+              : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+          }`}
+        >
+          <Settings className="w-3.5 h-3.5" />
+          <span>Settings (सेटिंग्स)</span>
         </button>
       </nav>
 
@@ -134,11 +146,11 @@ export const Header: React.FC<HeaderProps> = ({
           <button
             onClick={onOpenPaymentIn}
             className="flex items-center gap-1 px-2 sm:px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition shadow-2xs active:scale-95"
-            title="ग्राहक से पैसे प्राप्त होने की एंट्री करें"
+            title="Record Payment In from customer"
           >
             <ArrowDownLeft className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">पैसे मिले (Payment In)</span>
-            <span className="sm:hidden">+पैसे</span>
+            <span className="hidden sm:inline">Payment In (पैसे मिले)</span>
+            <span className="sm:hidden">+Payment</span>
           </button>
         )}
 

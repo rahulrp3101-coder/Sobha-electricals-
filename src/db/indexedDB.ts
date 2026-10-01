@@ -201,17 +201,23 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
     }
 
     // 3. Update party khata balance
-    if (invoice.partyId && invoice.balanceAmount > 0) {
+    if (invoice.partyId) {
       const partyReq = partyStore.get(invoice.partyId);
       partyReq.onsuccess = () => {
         const party = partyReq.result as Party;
         if (party) {
-          if (isSales) {
+          if (isSales && invoice.balanceAmount > 0) {
             // Customer owes us more (Receivable increase)
             party.currentBalance += invoice.balanceAmount;
-          } else if (isPurchase) {
+          } else if (isPurchase && invoice.balanceAmount > 0) {
             // We owe supplier more (Payable increase -> negative balance)
             party.currentBalance -= invoice.balanceAmount;
+          } else if (isCreditNote) {
+            // Sales return: Customer owes us less (decrease receivable)
+            party.currentBalance = Math.max(0, party.currentBalance - invoice.grandTotal);
+          } else if (isDebitNote) {
+            // Purchase return: We owe supplier less (decrease payable)
+            party.currentBalance += invoice.grandTotal;
           }
           party.updatedAt = new Date().toISOString();
           partyStore.put(party);

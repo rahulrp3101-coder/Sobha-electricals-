@@ -8,6 +8,8 @@ import {
 import { PartySelectModal } from './PartySelectModal';
 import { FinalInvoiceModal } from './FinalInvoiceModal';
 import { BarcodeCameraModal } from './BarcodeCameraModal';
+import { DynamicUpiQrModal } from './DynamicUpiQrModal';
+import { generateUpiQrDataUrl } from '../../services/upiQrService';
 import { playBarcodeBeep } from '../../services/soundEffects';
 import { generateWhatsAppInvoiceURL } from '../../services/whatsappShare';
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner';
@@ -130,20 +132,25 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
     }
   };
 
-  const handleOpenQuickAddForm = () => {
-    setQuickItemName('');
-    setQuickItemCategory('किराना व दैनिक सामान');
+  // UPI QR Modal State
+  const [isUpiQrModalOpen, setIsUpiQrModalOpen] = useState<boolean>(false);
+  const [inlineUpiQrUrl, setInlineUpiQrUrl] = useState<string>('');
+
+  const handleOpenQuickAddForm = (initialName: string = '', initialBarcode: string = '') => {
+    setQuickItemName(initialName);
+    setQuickItemCategory('General Goods (सामान्य वस्तुएं)');
     setQuickItemRetailPrice(100);
     setQuickItemPurchasePrice(80);
     setQuickItemUnit('PCS');
     setQuickItemStock(20);
     setQuickItemTaxRate(18);
+    setUnrecognizedBarcode(initialBarcode || null);
     setIsQuickAddingItem(true);
   };
 
   const handleQuickItemSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!quickItemName.trim() || !unrecognizedBarcode) return;
+    if (!quickItemName.trim()) return;
 
     setIsSavingQuickItem(true);
     try {
@@ -152,7 +159,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         name: quickItemName.trim(),
         category: quickItemCategory.trim(),
         sku: `SKU-${String(Date.now()).slice(-6)}`,
-        barcode: unrecognizedBarcode,
+        barcode: unrecognizedBarcode || undefined,
         hsn: '19053100',
         unit: quickItemUnit,
         purchasePrice: Number(quickItemPurchasePrice) || 0,
@@ -173,12 +180,13 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       // Audio BEEP!
       playBarcodeBeep();
 
-      // Immediately add this new item with its scanned barcode to the current bill!
+      // Immediately add this new item to the active bill!
       addItemToCartDirectly(newItem, 1, 0);
 
-      showFlashToast(`स्टॉक में नया सामान सेव हुआ व बिल में जुड़ा: ${newItem.name}`);
+      showFlashToast(`New item added to stock & bill: ${newItem.name}`);
       setUnrecognizedBarcode(null);
       setIsQuickAddingItem(false);
+      setSearchQuery('');
     } catch (err) {
       console.error('Failed to quick add item:', err);
       showFlashToast('सामान सेव करने में त्रुटि हुई', true);
@@ -307,6 +315,28 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
     }
   }, [totals.grandTotal, paymentMode]);
 
+  // Generate Dynamic UPI QR Code with exact bill amount and shop UPI ID
+  useEffect(() => {
+    if (paymentMode === 'UPI' && totals.grandTotal > 0) {
+      generateUpiQrDataUrl(
+        company.upiId || 'merchant@upi',
+        company.name || 'Merchant Store',
+        totals.grandTotal,
+        'BILL',
+        220
+      )
+        .then(url => setInlineUpiQrUrl(url))
+        .catch(err => console.error('Failed to generate inline UPI QR:', err));
+    }
+  }, [paymentMode, totals.grandTotal, company.upiId, company.name]);
+
+  const handleSelectPaymentMode = (mode: PaymentMode) => {
+    setPaymentMode(mode);
+    if (mode === 'UPI' && totals.grandTotal > 0) {
+      setIsUpiQrModalOpen(true);
+    }
+  };
+
   // Start a fresh new bill
   const handleStartNewBill = () => {
     // Default to Walk-in customer or first customer
@@ -409,13 +439,13 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
             <div>
               <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/15 text-blue-200 text-xs font-semibold backdrop-blur-xs mb-3">
                 <Sparkles className="w-3.5 h-3.5 text-amber-300" />
-                <span>व्यापार बिलिंग व इनवॉइसिंग (Vyapar Invoice)</span>
+                <span>POS Billing &amp; Counter (व्यापार बिलिंग)</span>
               </div>
               <h1 className="text-2xl sm:text-3xl font-black tracking-tight">
-                नया बिक्री बिल बनाएँ
+                Create Sales Invoice <span className="text-lg sm:text-xl font-normal text-blue-200">(नया बिक्री बिल)</span>
               </h1>
               <p className="text-xs sm:text-sm text-blue-100/90 mt-1 max-w-md leading-relaxed">
-                ग्राहक चुनें, मोबाइल कैमरे से बारकोड स्कैन करें या सामान सर्च करें और 10 सेकंड में GST बिल प्रिंट व WhatsApp शेयर करें।
+                Scan barcode or search items to generate instant GST invoice, thermal print &amp; WhatsApp bill.
               </p>
             </div>
 
@@ -427,7 +457,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               <div className="w-8 h-8 rounded-xl bg-slate-950/15 flex items-center justify-center">
                 <Plus className="w-5 h-5 text-slate-950 stroke-[3]" />
               </div>
-              <span>+ नया बिल बनाएँ (Create Invoice)</span>
+              <span>+ Create New Bill (नया बिल बनाएँ)</span>
               <ChevronRight className="w-5 h-5 group-hover:translate-x-1 transition" />
             </button>
           </div>
@@ -437,40 +467,40 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
             <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-              <span>आज की बिक्री (Today's Sale)</span>
+              <span>Today&apos;s Sales (आज की बिक्री)</span>
               <TrendingUp className="w-4 h-4 text-emerald-600" />
             </div>
             <div className="text-xl sm:text-2xl font-black text-slate-900 mt-1 font-mono">
               {formatINR(todaySalesTotal)}
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              {todayInvoices.length} बिल बनाए गए
+              {todayInvoices.length} invoices generated
             </div>
           </div>
 
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs">
             <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-              <span>कुल ग्राहक उधारी (Total Udhar)</span>
+              <span>Receivables (ग्राहक उधारी)</span>
               <AlertTriangle className="w-4 h-4 text-amber-600" />
             </div>
             <div className="text-xl sm:text-2xl font-black text-amber-700 mt-1 font-mono">
               {formatINR(totalReceivables)}
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              ग्राहकों से लेना बाकी
+              Pending from customers
             </div>
           </div>
 
           <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs col-span-2 sm:col-span-1">
             <div className="flex items-center justify-between text-slate-500 text-xs font-semibold">
-              <span>कुल पंजीकृत सामान (Items)</span>
+              <span>Items in Stock (स्टॉक उत्पाद)</span>
               <ShoppingBag className="w-4 h-4 text-blue-600" />
             </div>
             <div className="text-xl sm:text-2xl font-black text-blue-700 mt-1">
               {items.length}
             </div>
             <div className="text-[11px] text-slate-400 mt-0.5">
-              स्टॉक में उपलब्ध उत्पाद
+              Active inventory items
             </div>
           </div>
         </div>
@@ -481,7 +511,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
             <div className="flex items-center gap-2">
               <FileText className="w-5 h-5 text-blue-600" />
               <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
-                हाल ही में बने बिल (Recent Invoices)
+                Recent Invoices (हाल ही के बिल)
               </h3>
             </div>
 
@@ -490,7 +520,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1 shadow-2xs active:scale-95"
             >
               <Plus className="w-3.5 h-3.5" />
-              <span>+ नया बिल</span>
+              <span>+ New Bill (नया बिल)</span>
             </button>
           </div>
 
@@ -500,9 +530,9 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 <FileText className="w-7 h-7" />
               </div>
               <div>
-                <p className="text-sm font-bold text-slate-700">अभी तक कोई बिल नहीं बना है</p>
+                <p className="text-sm font-bold text-slate-700">No invoices yet (कोई बिल दर्ज नहीं है)</p>
                 <p className="text-xs text-slate-400 mt-0.5">
-                  अपनी पहली बिक्री दर्ज करने के लिए ऊपर "+ नया बिल बनाएँ" बटन दबाएं।
+                  Click &quot;+ Create New Bill&quot; to start your first transaction.
                 </p>
               </div>
               <button
@@ -510,7 +540,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 className="mt-2 px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-extrabold shadow-sm transition inline-flex items-center gap-2"
               >
                 <Plus className="w-4 h-4" />
-                <span>पहला बिल बनाएँ</span>
+                <span>+ Create First Bill (पहला बिल बनाएँ)</span>
               </button>
             </div>
           ) : (
@@ -644,10 +674,10 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       />
 
       {/* Item Not Found in Stock Alert & Quick Add Modal */}
-      {unrecognizedBarcode && (
+      {(unrecognizedBarcode || isQuickAddingItem) && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-2xs p-3 sm:p-4">
           <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col animate-in fade-in zoom-in-95 duration-200">
-            {!isQuickAddingItem ? (
+            {!isQuickAddingItem && unrecognizedBarcode ? (
               // Alert Screen: Item not found
               <div className="p-5 sm:p-6 text-center space-y-4">
                 <div className="w-16 h-16 bg-amber-100 text-amber-600 rounded-3xl flex items-center justify-center mx-auto shadow-inner">
@@ -656,31 +686,34 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
 
                 <div className="space-y-1.5">
                   <h3 className="text-base sm:text-lg font-black text-slate-900">
-                    यह सामान स्टॉक में नहीं मिला!
+                    Item Not Found in Stock! (सामान नहीं मिला)
                   </h3>
                   <div className="text-xs text-slate-500">
-                    स्कैन बारकोड: <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">{unrecognizedBarcode}</span>
+                    Scanned Barcode: <span className="font-mono font-bold text-slate-900 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">{unrecognizedBarcode}</span>
                   </div>
                   <p className="text-xs text-slate-600 pt-1 leading-relaxed">
-                    यह बारकोड आपकी इन्वेंट्री में पंजीकृत नहीं है। क्या आप इसे अभी तुरंत स्टॉक में जोड़ना चाहते हैं?
+                    यह बारकोड इन्वेंट्री में नहीं है। क्या आप इसे तुरंत स्टॉक और वर्तमान बिल में जोड़ना चाहते हैं?
                   </p>
                 </div>
 
                 <div className="pt-2 flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setUnrecognizedBarcode(null)}
+                    onClick={() => {
+                      setUnrecognizedBarcode(null);
+                      setIsQuickAddingItem(false);
+                    }}
                     className="flex-1 py-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
                   >
-                    रद्द करें (Cancel)
+                    Cancel (रद्द करें)
                   </button>
                   <button
                     type="button"
-                    onClick={handleOpenQuickAddForm}
+                    onClick={() => handleOpenQuickAddForm('', unrecognizedBarcode)}
                     className="flex-1 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs sm:text-sm font-extrabold transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95"
                   >
                     <Plus className="w-4 h-4 stroke-[3]" />
-                    <span>+ नया सामान जोड़ें</span>
+                    <span>+ Add New Item</span>
                   </button>
                 </div>
               </div>
@@ -690,10 +723,10 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
                   <div>
                     <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
-                      + नया सामान स्टॉक में जोड़ें
+                      + Quick Add Item to Stock &amp; Bill
                     </h3>
                     <p className="text-[11px] text-slate-500 font-mono">
-                      बारकोड: <strong>{unrecognizedBarcode}</strong>
+                      {unrecognizedBarcode ? `Barcode: ${unrecognizedBarcode}` : 'Instant Billing Counter Quick Add'}
                     </p>
                   </div>
                   <button
@@ -711,13 +744,13 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 <div className="p-4 sm:p-5 space-y-3 max-h-[75vh] overflow-y-auto text-xs">
                   <div>
                     <label className="block font-bold text-slate-700 mb-1">
-                      सामान का नाम (Item Name) *
+                      Item Name (सामान का नाम) *
                     </label>
                     <input
                       type="text"
                       required
                       autoFocus
-                      placeholder="उदा. पारले-जी बिस्कुट 200g / अमूल दूध 1L"
+                      placeholder="e.g. Parle-G Biscuit 200g / Amul Milk 1L"
                       value={quickItemName}
                       onChange={e => setQuickItemName(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
@@ -727,7 +760,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">
-                        कैटेगरी (Category)
+                        Category (कैटेगरी)
                       </label>
                       <input
                         type="text"
@@ -739,7 +772,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
 
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">
-                        इकाई (Unit)
+                        Unit (इकाई)
                       </label>
                       <select
                         value={quickItemUnit}
@@ -759,7 +792,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   <div className="grid grid-cols-2 gap-2.5 bg-blue-50/70 p-3 rounded-2xl border border-blue-200">
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">
-                        बिक्री दर (Sale Price ₹) *
+                        Sale Price ₹ (बिक्री दर) *
                       </label>
                       <input
                         type="number"
@@ -775,7 +808,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
 
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">
-                        खरीद दर (Purchase ₹)
+                        Purchase Price ₹ (खरीद दर)
                       </label>
                       <input
                         type="number"
@@ -792,7 +825,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   <div className="grid grid-cols-2 gap-2.5">
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">
-                        स्टॉक मात्रा (Stock Qty)
+                        Current Stock (स्टॉक मात्रा) *
                       </label>
                       <input
                         type="number"
@@ -805,7 +838,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
 
                     <div>
                       <label className="block font-bold text-slate-700 mb-1">
-                        GST दर (Tax Rate %)
+                        GST Rate % (टैक्स दर)
                       </label>
                       <select
                         value={quickItemTaxRate}
@@ -825,10 +858,13 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 <div className="p-4 border-t border-slate-100 bg-white flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => setIsQuickAddingItem(false)}
+                    onClick={() => {
+                      setUnrecognizedBarcode(null);
+                      setIsQuickAddingItem(false);
+                    }}
                     className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
                   >
-                    पीछे
+                    Cancel (रद्द करें)
                   </button>
                   <button
                     type="submit"
@@ -836,7 +872,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                     className="flex-2 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs sm:text-sm font-extrabold transition shadow-xs flex items-center justify-center gap-1.5"
                   >
                     <Check className="w-4 h-4" />
-                    <span>{isSavingQuickItem ? 'सेव हो रहा है...' : 'सेव करें व बिल में जोड़ें'}</span>
+                    <span>{isSavingQuickItem ? 'Saving...' : '+ Save to Stock & Add to Bill (सेव करें व बिल में जोड़ें)'}</span>
                   </button>
                 </div>
               </form>
@@ -854,14 +890,14 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               className="p-1.5 rounded-xl text-slate-500 hover:text-slate-800 hover:bg-slate-100 transition flex items-center gap-1 text-xs font-bold"
             >
               <ArrowLeft className="w-4 h-4" />
-              <span>बिलिंग होम पर लौटें</span>
+              <span>← Back to Dashboard (वापस)</span>
             </button>
             <span className="text-slate-300">|</span>
-            <span className="font-extrabold text-sm text-slate-900">नया बिक्री बिल (Create Bill)</span>
+            <span className="font-extrabold text-sm text-slate-900">New Sales Invoice (नया बिक्री बिल)</span>
           </div>
 
           <div className="text-xs text-slate-500 font-mono hidden sm:block">
-            तारीख: <strong>{new Date().toLocaleDateString('hi-IN')}</strong>
+            Date (तारीख): <strong>{new Date().toLocaleDateString('en-IN')}</strong>
           </div>
         </div>
 
@@ -873,7 +909,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 1
               </span>
               <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
-                ग्राहक / पार्टी विवरण (Customer Details)
+                Customer Details <span className="text-xs font-normal text-slate-500">(ग्राहक / पार्टी विवरण)</span>
               </h3>
             </div>
 
@@ -882,7 +918,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-xl text-xs font-bold transition flex items-center gap-1 border border-blue-200 active:scale-95"
             >
               <UserCheck className="w-3.5 h-3.5" />
-              <span>{selectedParty ? 'ग्राहक बदलें' : 'ग्राहक चुनें / जोड़ें'}</span>
+              <span>{selectedParty ? 'Change Customer (बदलें)' : 'Select Customer (ग्राहक चुनें)'}</span>
             </button>
           </div>
 
@@ -894,7 +930,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                     {selectedParty.name}
                   </span>
                   <span className="text-[10px] bg-slate-200 text-slate-700 font-bold px-1.5 py-0.5 rounded">
-                    {selectedParty.type === 'CUSTOMER' ? 'ग्राहक' : 'सप्लायर'}
+                    {selectedParty.type === 'CUSTOMER' ? 'Customer (ग्राहक)' : 'Supplier (सप्लायर)'}
                   </span>
                 </div>
 
@@ -905,13 +941,13 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   {selectedParty.address && (
                     <span className="truncate max-w-xs">📍 {selectedParty.address}</span>
                   )}
-                  <span>राज्य: {selectedParty.state} ({selectedParty.stateCode})</span>
+                  <span>State: {selectedParty.state} ({selectedParty.stateCode})</span>
                 </div>
               </div>
 
               {/* Outstanding Balance Badge */}
               <div className="shrink-0 self-start sm:self-auto bg-white p-2.5 rounded-xl border border-slate-200 text-right">
-                <div className="text-[10px] text-slate-400 font-semibold">पिछला बकाया (Old Balance):</div>
+                <div className="text-[10px] text-slate-400 font-semibold">Previous Balance (पिछला बकाया):</div>
                 <div className={`text-sm font-mono font-black ${
                   selectedParty.currentBalance > 0
                     ? 'text-amber-700'
@@ -920,10 +956,10 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                     : 'text-emerald-700'
                 }`}>
                   {selectedParty.currentBalance > 0
-                    ? `${formatINR(selectedParty.currentBalance)} बाकी`
+                    ? `${formatINR(selectedParty.currentBalance)} Due (बाकी)`
                     : selectedParty.currentBalance < 0
-                    ? `${formatINR(Math.abs(selectedParty.currentBalance))} एडवांस`
-                    : '₹0 चुकता'}
+                    ? `${formatINR(Math.abs(selectedParty.currentBalance))} Advance (एडवांस)`
+                    : '₹0 Settled (चुकता)'}
                 </div>
               </div>
             </div>
@@ -931,13 +967,13 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
             <div className="p-4 bg-amber-50 border border-amber-200 rounded-2xl flex items-center justify-between gap-3">
               <div className="flex items-center gap-2 text-xs text-amber-900 font-semibold">
                 <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                <span>बिल शुरू करने के लिए कृपया ग्राहक चुनें या नकद ग्राहक सेट करें।</span>
+                <span>Please select a customer or keep default Walk-in Customer to proceed.</span>
               </div>
               <button
                 onClick={() => setIsPartyModalOpen(true)}
                 className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold transition shadow-xs"
               >
-                + ग्राहक चुनें
+                + Select Customer (ग्राहक चुनें)
               </button>
             </div>
           )}
@@ -945,24 +981,36 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
 
         {/* STEP 2: DUAL ITEM ADD SYSTEM (SCAN & SEARCH) */}
         <div className="bg-white rounded-3xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
-          <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-100 pb-3 gap-2.5">
             <div className="flex items-center gap-2">
               <span className="w-6 h-6 rounded-full bg-blue-600 text-white font-black text-xs flex items-center justify-center">
                 2
               </span>
               <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
-                सामान जोड़ें (Scan Barcode & Search Items)
+                Item Search &amp; Scan <span className="text-xs font-normal text-slate-500">(सामान जोड़ें / स्कैन करें)</span>
               </h3>
             </div>
 
-            {/* BIG PROMINENT CAMERA BARCODE SCAN BUTTON */}
-            <button
-              onClick={() => setShowCameraScanner(true)}
-              className="py-2.5 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs sm:text-sm font-extrabold transition shadow-md flex items-center gap-2 active:scale-95 animate-pulse-subtle"
-            >
-              <Camera className="w-4 h-4 stroke-[2.5]" />
-              <span>📷 बारकोड स्कैन करें (Scan Barcode)</span>
-            </button>
+            {/* Quick Add Item & Camera Barcode Scan Buttons */}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => handleOpenQuickAddForm(searchQuery.trim())}
+                className="py-2 px-3 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white rounded-xl text-xs font-extrabold transition shadow-xs flex items-center gap-1.5"
+              >
+                <Plus className="w-4 h-4 stroke-[3]" />
+                <span>+ Add New Item (नया आइटम)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setShowCameraScanner(true)}
+                className="py-2 px-3 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-extrabold transition shadow-xs flex items-center gap-1.5"
+              >
+                <Camera className="w-4 h-4 stroke-[2.5]" />
+                <span>📷 Scan Barcode</span>
+              </button>
+            </div>
           </div>
 
           {/* Search, Quantity & Add Section */}
@@ -971,7 +1019,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               {/* Autocomplete Search Input */}
               <div className="md:col-span-6 relative">
                 <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  सामान खोजें (नाम / SKU / बारकोड)
+                  Item Search (सामान नाम / बारकोड खोजें)
                 </label>
                 <div className="relative">
                   <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3 pointer-events-none" />
@@ -983,11 +1031,27 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                       setIsSearchDropdownOpen(true);
                     }}
                     onFocus={() => setIsSearchDropdownOpen(true)}
-                    placeholder="सामान का नाम या कोड टाइप करें..."
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-semibold"
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (searchResults.length > 0) {
+                          const first = searchResults[0];
+                          setSelectedSearchItem(first);
+                          addItemToCartDirectly(first, itemQuantity, itemDiscountPercent);
+                          setSearchQuery('');
+                          setIsSearchDropdownOpen(false);
+                        } else if (searchQuery.trim()) {
+                          handleOpenQuickAddForm(searchQuery.trim());
+                          setIsSearchDropdownOpen(false);
+                        }
+                      }
+                    }}
+                    placeholder="Type item name, SKU or barcode (Enter to add)..."
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-8 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-semibold"
                   />
                   {searchQuery && (
                     <button
+                      type="button"
                       onClick={() => {
                         setSearchQuery('');
                         setSelectedSearchItem(null);
@@ -1000,34 +1064,72 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 </div>
 
                 {/* Dropdown search results */}
-                {isSearchDropdownOpen && searchResults.length > 0 && (
-                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-60 overflow-y-auto z-40 p-1 divide-y divide-slate-100">
-                    {searchResults.map((item) => (
-                      <div
-                        key={item.id}
-                        onClick={() => {
-                          setSelectedSearchItem(item);
-                          setSearchQuery(item.name);
-                          setIsSearchDropdownOpen(false);
-                        }}
-                        className="p-2.5 hover:bg-blue-50 rounded-xl cursor-pointer flex items-center justify-between text-xs transition"
-                      >
-                        <div className="min-w-0 flex-1">
-                          <div className="font-bold text-slate-900 truncate">{item.name}</div>
-                          <div className="text-[10px] text-slate-400 font-mono">
-                            SKU: {item.sku} {item.barcode ? `· बारकोड: ${item.barcode}` : ''}
+                {isSearchDropdownOpen && (
+                  <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl max-h-72 overflow-y-auto z-40 p-1 divide-y divide-slate-100">
+                    {searchResults.length > 0 ? (
+                      <>
+                        {searchResults.map((item) => (
+                          <div
+                            key={item.id}
+                            onClick={() => {
+                              setSelectedSearchItem(item);
+                              setSearchQuery(item.name);
+                              setIsSearchDropdownOpen(false);
+                            }}
+                            className="p-2.5 hover:bg-blue-50 rounded-xl cursor-pointer flex items-center justify-between text-xs transition"
+                          >
+                            <div className="min-w-0 flex-1">
+                              <div className="font-bold text-slate-900 truncate">{item.name}</div>
+                              <div className="text-[10px] text-slate-400 font-mono">
+                                SKU: {item.sku} {item.barcode ? `· Barcode: ${item.barcode}` : ''}
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0 ml-2">
+                              <div className="font-mono font-bold text-slate-900">
+                                {formatINR(item.retailPrice || item.wholesalePrice)}
+                              </div>
+                              <div className="text-[10px] text-slate-400">
+                                Stock: {item.currentStock} {item.unit}
+                              </div>
+                            </div>
                           </div>
+                        ))}
+
+                        {/* Always offer quick add at the bottom of search results */}
+                        <div
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleOpenQuickAddForm(searchQuery.trim());
+                            setIsSearchDropdownOpen(false);
+                          }}
+                          className="p-2.5 bg-blue-50/90 hover:bg-blue-100 text-blue-800 font-bold flex items-center justify-between text-xs cursor-pointer border-t border-blue-200 rounded-b-xl"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            <Plus className="w-4 h-4 stroke-[3] text-blue-600" />
+                            <span>+ Add &quot;{searchQuery.trim() || 'New Item'}&quot; to Stock &amp; Bill</span>
+                          </span>
+                          <span className="text-[10px] bg-blue-200 text-blue-900 px-2 py-0.5 rounded font-mono">Quick Add</span>
                         </div>
-                        <div className="text-right shrink-0 ml-2">
-                          <div className="font-mono font-bold text-slate-900">
-                            {formatINR(item.retailPrice || item.wholesalePrice)}
-                          </div>
-                          <div className="text-[10px] text-slate-400">
-                            स्टॉक: {item.currentStock} {item.unit}
-                          </div>
-                        </div>
+                      </>
+                    ) : searchQuery.trim().length > 0 ? (
+                      <div className="p-3 text-center space-y-2">
+                        <p className="text-xs text-slate-500">
+                          Item not found for &quot;<strong className="text-slate-800">{searchQuery}</strong>&quot;
+                        </p>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            handleOpenQuickAddForm(searchQuery.trim());
+                            setIsSearchDropdownOpen(false);
+                          }}
+                          className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 shadow-xs transition"
+                        >
+                          <Plus className="w-4 h-4 stroke-[3]" />
+                          <span>+ Add New Item &quot;{searchQuery}&quot; (नया आइटम जोड़ें)</span>
+                        </button>
                       </div>
-                    ))}
+                    ) : null}
                   </div>
                 )}
               </div>
@@ -1035,7 +1137,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               {/* Quantity Input */}
               <div className="md:col-span-2">
                 <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  मात्रा (Qty)
+                  Quantity (मात्रा)
                 </label>
                 <div className="flex items-center bg-slate-50 border border-slate-300 rounded-xl p-1">
                   <button
@@ -1065,7 +1167,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               {/* Discount Input */}
               <div className="md:col-span-2">
                 <label className="block text-[11px] font-bold text-slate-600 mb-1">
-                  छूट % (Discount)
+                  Discount % (छूट)
                 </label>
                 <input
                   type="number"
@@ -1086,7 +1188,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   onClick={() => {
                     if (selectedSearchItem) {
                       addItemToCartDirectly(selectedSearchItem, itemQuantity, itemDiscountPercent);
-                      showFlashToast(`जोड़ा गया: ${selectedSearchItem.name}`);
+                      showFlashToast(`Added: ${selectedSearchItem.name}`);
                       setSearchQuery('');
                       setSelectedSearchItem(null);
                       setItemQuantity(1);
@@ -1096,14 +1198,14 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white rounded-xl text-xs sm:text-sm font-extrabold transition shadow-xs flex items-center justify-center gap-1 active:scale-98"
                 >
                   <Plus className="w-4 h-4" />
-                  <span>+ जोड़ें (Add)</span>
+                  <span>+ Add (जोड़ें)</span>
                 </button>
               </div>
             </div>
 
             {/* Quick Catalog Chips */}
             <div className="flex items-center gap-1.5 overflow-x-auto pt-1 pb-1 scrollbar-none">
-              <span className="text-[11px] text-slate-400 font-medium shrink-0">जल्दी जोड़ें:</span>
+              <span className="text-[11px] text-slate-400 font-medium shrink-0">Quick Add:</span>
               {items.slice(0, 6).map((item) => (
                 <button
                   key={item.id}
@@ -1123,7 +1225,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         {/* STEP 3 & 4: CART & LIVE INVOICE SUMMARY */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
           
-          {/* Cart Table (8 Cols on Desktop) */}
+          {/* Cart Table (7 Cols on Desktop) */}
           <div className="lg:col-span-7 bg-white rounded-3xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-3">
             <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
               <div className="flex items-center gap-2">
@@ -1131,7 +1233,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   3
                 </span>
                 <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
-                  चालू बिल में सामान (Cart Items)
+                  Cart Items <span className="text-xs font-normal text-slate-500">(बिल में जोड़े गए सामान)</span>
                 </h3>
                 <span className="bg-blue-100 text-blue-800 text-xs font-black px-2 py-0.5 rounded-full">
                   {cartLines.length}
@@ -1144,7 +1246,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   className="text-xs text-red-600 hover:text-red-800 font-bold flex items-center gap-1"
                 >
                   <Trash2 className="w-3.5 h-3.5" />
-                  <span>बिल खाली करें</span>
+                  <span>Clear Cart (खाली करें)</span>
                 </button>
               )}
             </div>
@@ -1152,9 +1254,9 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
             {cartLines.length === 0 ? (
               <div className="p-8 sm:p-12 text-center text-slate-400 space-y-2">
                 <ShoppingBag className="w-10 h-10 text-slate-300 mx-auto" />
-                <p className="text-sm font-bold text-slate-600">वर्तमान बिल खाली है</p>
+                <p className="text-sm font-bold text-slate-600">Cart is Empty (बिल खाली है)</p>
                 <p className="text-xs text-slate-400 max-w-xs mx-auto">
-                  ऊपर '📷 बारकोड स्कैन करें' दबाएं या सर्च बार से सामान जोड़ें।
+                  Scan barcode above or use item search to add products to this bill.
                 </p>
               </div>
             ) : (
@@ -1166,9 +1268,9 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                         {line.itemName}
                       </div>
                       <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
-                        <span>दर: {formatINR(line.unitPrice)}</span>
+                        <span>Rate: {formatINR(line.unitPrice)}</span>
                         <span>GST: {line.taxRate}%</span>
-                        {line.discountPercent > 0 && <span className="text-emerald-700">छूट: {line.discountPercent}%</span>}
+                        {line.discountPercent > 0 && <span className="text-emerald-700">Disc: {line.discountPercent}%</span>}
                       </div>
                     </div>
 
@@ -1218,38 +1320,38 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 4
               </span>
               <h3 className="font-extrabold text-sm sm:text-base text-slate-900">
-                भुगतान व बिल सारांश (Payment & Finalize)
+                Payment &amp; Summary <span className="text-xs font-normal text-slate-500">(भुगतान व सारांश)</span>
               </h3>
             </div>
 
             {/* Calculations Breakdown */}
             <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200 space-y-2 text-xs">
               <div className="flex justify-between text-slate-600">
-                <span>उप-कुल (Subtotal):</span>
+                <span>Subtotal (उप-कुल):</span>
                 <span className="font-mono">{formatINR(totals.subTotal)}</span>
               </div>
 
               {totals.totalDiscount > 0 && (
                 <div className="flex justify-between text-emerald-700">
-                  <span>कुल छूट (Discount):</span>
+                  <span>Discount (कुल छूट):</span>
                   <span className="font-mono">-{formatINR(totals.totalDiscount)}</span>
                 </div>
               )}
 
               <div className="flex justify-between text-slate-600">
-                <span>कुल GST कर (Total Tax):</span>
+                <span>GST Tax (कुल कर):</span>
                 <span className="font-mono">{formatINR(totals.totalTax)}</span>
               </div>
 
               {totals.roundOff !== 0 && (
                 <div className="flex justify-between text-slate-500 text-[11px]">
-                  <span>राउंड ऑफ (Round Off):</span>
+                  <span>Round Off (राउंड ऑफ):</span>
                   <span className="font-mono">{totals.roundOff > 0 ? `+${totals.roundOff}` : totals.roundOff}</span>
                 </div>
               )}
 
               <div className="pt-2 border-t border-slate-200 flex justify-between items-baseline font-black text-slate-900">
-                <span className="text-sm">कुल देय राशि (Grand Total):</span>
+                <span className="text-sm">Grand Total (कुल राशि):</span>
                 <span className="text-xl sm:text-2xl font-mono text-blue-700">{formatINR(totals.grandTotal)}</span>
               </div>
             </div>
@@ -1257,22 +1359,22 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
             {/* Payment Mode Selector */}
             <div className="space-y-1.5">
               <label className="block text-xs font-bold text-slate-700">
-                भुगतान का माध्यम (Payment Mode):
+                Payment Mode <span className="font-normal text-slate-500">(भुगतान का माध्यम)</span>:
               </label>
 
               <div className="grid grid-cols-2 gap-2">
                 {[
-                  { id: 'CASH', label: '💵 नकद (Cash)' },
-                  { id: 'UPI', label: '📱 UPI / QR' },
-                  { id: 'CREDIT', label: '📒 उधार (Udhar)' },
-                  { id: 'BANK_TRANSFER', label: '💳 कार्ड / बैंक' },
+                  { id: 'CASH', label: '💵 Cash (नकद)' },
+                  { id: 'UPI', label: '📱 UPI / QR (यूपीआई)' },
+                  { id: 'CREDIT', label: '📒 Credit (उधार खाता)' },
+                  { id: 'BANK_TRANSFER', label: '💳 Bank / Card (बैंक)' },
                 ].map((m) => {
                   const isSelected = paymentMode === m.id;
                   return (
                     <button
                       key={m.id}
                       type="button"
-                      onClick={() => setPaymentMode(m.id as PaymentMode)}
+                      onClick={() => handleSelectPaymentMode(m.id as PaymentMode)}
                       className={`p-2.5 rounded-xl border text-xs font-extrabold transition text-center ${
                         isSelected
                           ? m.id === 'CREDIT'
@@ -1288,19 +1390,67 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               </div>
             </div>
 
+            {/* Dynamic UPI QR Code Display (Requirement 3) */}
+            {paymentMode === 'UPI' && (
+              <div className="p-3.5 bg-blue-50/80 border border-blue-200 rounded-2xl space-y-2.5 animate-in fade-in">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-1.5">
+                    <QrCode className="w-4 h-4 text-blue-700" />
+                    <span className="font-extrabold text-xs text-blue-950">Dynamic UPI QR Code</span>
+                  </div>
+                  <span className="text-[10px] font-bold bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full">
+                    Auto-Embedded Amount
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                  {inlineUpiQrUrl ? (
+                    <div 
+                      onClick={() => setIsUpiQrModalOpen(true)}
+                      className="w-20 h-20 bg-white p-1 rounded-xl border border-blue-300 shadow-2xs shrink-0 cursor-pointer hover:border-blue-500 transition"
+                      title="Click to enlarge QR"
+                    >
+                      <img src={inlineUpiQrUrl} alt="UPI QR" className="w-full h-full object-contain" />
+                    </div>
+                  ) : (
+                    <div className="w-20 h-20 bg-white rounded-xl border border-blue-200 flex items-center justify-center shrink-0">
+                      <QrCode className="w-8 h-8 text-blue-400 animate-pulse" />
+                    </div>
+                  )}
+
+                  <div className="min-w-0 flex-1 space-y-1">
+                    <div className="text-[11px] text-slate-600 truncate">
+                      Exact Amount: <strong className="text-slate-900 font-mono">{formatINR(totals.grandTotal)}</strong>
+                    </div>
+                    <div className="text-[10px] text-slate-500 font-mono truncate">
+                      UPI ID: {company.upiId || 'shop@upi'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setIsUpiQrModalOpen(true)}
+                      className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[10px] font-bold transition flex items-center gap-1 shadow-2xs active:scale-95"
+                    >
+                      <QrCode className="w-3 h-3" />
+                      <span>🔍 Enlarge QR (बड़ा QR दिखाएं)</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Udhar / Khata Notice */}
             {paymentMode === 'CREDIT' && (
               <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-xs text-amber-950 space-y-1">
                 <div className="flex items-center gap-1.5 font-bold">
                   <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>उधार बिल (Credit Sale):</span>
+                  <span>Credit Sale (उधार बिल):</span>
                 </div>
                 <p className="text-[11px] leading-relaxed">
-                  यह बिल सेव होते ही <strong className="font-mono text-amber-900">{formatINR(totals.grandTotal)}</strong> सीधे <strong>{selectedParty?.name || 'ग्राहक'}</strong> के खाते में बकाया के रूप में जुड़ जाएगा।
+                  This bill of <strong className="font-mono text-amber-900">{formatINR(totals.grandTotal)}</strong> will be added to <strong>{selectedParty?.name || 'Customer'}</strong>&apos;s pending khata.
                 </p>
                 {selectedParty && (
                   <div className="text-[11px] font-bold pt-1 border-t border-amber-200">
-                    नया कुल बकाया: <span className="font-mono text-amber-900">{formatINR(customerPreviousBalance + totals.grandTotal)}</span>
+                    New Total Due: <span className="font-mono text-amber-900">{formatINR(customerPreviousBalance + totals.grandTotal)}</span>
                   </div>
                 )}
               </div>
@@ -1310,7 +1460,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
             <div>
               <input
                 type="text"
-                placeholder="बिल टिप्पणी / नोट (वैकल्पिक)..."
+                placeholder="Invoice Notes / Remarks (बिल नोट / टिप्पणी - वैकल्पिक)..."
                 value={invoiceNotes}
                 onChange={(e) => setInvoiceNotes(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500"
@@ -1325,12 +1475,25 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-2xl text-sm sm:text-base font-black transition shadow-lg flex items-center justify-center gap-2 active:scale-98"
             >
               <Check className="w-5 h-5 stroke-[3]" />
-              <span>{isSaving ? 'बिल सेव हो रहा है...' : 'बिल पूरा करें / सेव व प्रिंट (Finalize & Print)'}</span>
+              <span>{isSaving ? 'Saving Invoice...' : '✓ Finalize & Print Bill (बिल पूरा करें / सेव व प्रिंट)'}</span>
             </button>
           </div>
         </div>
 
       </div>
+
+      {/* Dynamic Fullscreen UPI QR Code Modal */}
+      <DynamicUpiQrModal
+        isOpen={isUpiQrModalOpen}
+        onClose={() => setIsUpiQrModalOpen(false)}
+        upiId={company.upiId}
+        shopName={company.name}
+        amount={totals.grandTotal}
+        invoiceNumber="New Bill"
+        onConfirmPaid={() => {
+          showFlashToast('UPI payment marked as received!');
+        }}
+      />
     </div>
   );
 };

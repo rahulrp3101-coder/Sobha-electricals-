@@ -98,10 +98,10 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
             )}
             <div>
               <h3 className="font-bold text-sm sm:text-base text-slate-900">
-                {isAddingNew ? '+ नया ग्राहक जोड़ें (Add New Party)' : 'ग्राहक / पार्टी चुनें (Select Party)'}
+                {isAddingNew ? '+ Add New Customer (नया ग्राहक जोड़ें)' : 'Select Customer / Party (ग्राहक चुनें)'}
               </h3>
               <p className="text-[11px] text-slate-500">
-                {isAddingNew ? 'ग्राहक का विवरण भरें और तुरंत बिल में जोड़ें' : 'बिल के लिए ग्राहक चुनें या नया जोड़ें'}
+                {isAddingNew ? 'Enter customer details to add and select for active bill' : 'Choose customer or walk-in to attach to active bill'}
               </p>
             </div>
           </div>
@@ -124,7 +124,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                 <input
                   type="text"
                   autoFocus
-                  placeholder="ग्राहक का नाम या मोबाइल नंबर खोजें..."
+                  placeholder="Search customer by name or phone..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-medium"
@@ -154,7 +154,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                   }}
                   className="flex-1 py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border border-slate-300 active:scale-98"
                 >
-                  <span>💵 नकद ग्राहक (Walk-in)</span>
+                  <span>💵 Walk-in Customer (नकद ग्राहक)</span>
                 </button>
 
                 {/* Add New Party Button */}
@@ -164,7 +164,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                   className="flex-1 py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs active:scale-98"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>+ नई पार्टी जोड़ें</span>
+                  <span>+ New Customer (नया ग्राहक)</span>
                 </button>
               </div>
             </div>
@@ -173,9 +173,9 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
             <div className="p-3 divide-y divide-slate-100 overflow-y-auto flex-1 space-y-1">
               {filteredParties.length === 0 ? (
                 <div className="p-8 text-center text-slate-400">
-                  <p className="text-sm font-bold text-slate-600">कोई ग्राहक नहीं मिला</p>
+                  <p className="text-sm font-bold text-slate-600">No customer found (कोई ग्राहक नहीं मिला)</p>
                   <p className="text-xs text-slate-400 mt-1">
-                    "{searchQuery}" नाम से कोई ग्राहक नहीं मिला। ऊपर "+ नई पार्टी जोड़ें" पर क्लिक करके इसे जोड़ें।
+                    No customer matches &quot;{searchQuery}&quot;. Click below to create.
                   </p>
                   <button
                     type="button"
@@ -186,7 +186,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                     className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold inline-flex items-center gap-1"
                   >
                     <Plus className="w-3.5 h-3.5" />
-                    <span>"{searchQuery}" को नया ग्राहक बनाएं</span>
+                    <span>+ Add &quot;{searchQuery}&quot; as Customer</span>
                   </button>
                 </div>
               ) : (
@@ -212,7 +212,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                           </span>
                           {isSelected && (
                             <span className="text-[10px] bg-blue-600 text-white px-1.5 py-0.2 rounded font-bold">
-                              चुना गया
+                              Selected (चुना गया)
                             </span>
                           )}
                         </div>
@@ -246,10 +246,10 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                           }`}
                         >
                           {p.currentBalance > 0
-                            ? `${formatINR(p.currentBalance)} बाकी`
+                            ? `${formatINR(p.currentBalance)} Due (बाकी)`
                             : p.currentBalance < 0
-                            ? `${formatINR(Math.abs(p.currentBalance))} एडवांस`
-                            : '₹0 चुकता'}
+                            ? `${formatINR(Math.abs(p.currentBalance))} Adv (एडवांस)`
+                            : '₹0 Settled (चुकता)'}
                         </div>
                       </div>
                     </div>
@@ -263,13 +263,13 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
           <form onSubmit={handleAddNewPartySubmit} className="p-4 sm:p-5 overflow-y-auto space-y-3.5 flex-1">
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                ग्राहक / पार्टी का नाम (Customer Name) *
+                Customer Name (ग्राहक का नाम) *
               </label>
               <input
                 type="text"
                 required
                 autoFocus
-                placeholder="उदा. राजेश कुमार"
+                placeholder="e.g. Rajesh Kumar"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-semibold"
@@ -279,11 +279,11 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  मोबाइल नंबर (Mobile Phone)
+                  Mobile Phone (मोबाइल नंबर)
                 </label>
                 <input
                   type="tel"
-                  placeholder="उदा. 9876543210"
+                  placeholder="9876543210"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-mono"
@@ -307,11 +307,11 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
 
             <div>
               <label className="block text-xs font-bold text-slate-700 mb-1">
-                पूरा पता (Address)
+                Address (दुकान / मकान का पता)
               </label>
               <textarea
                 rows={2}
-                placeholder="दुकान / मकान नं., सड़क, शहर, पिनकोड"
+                placeholder="Shop / House No., Street, City, Pincode"
                 value={address}
                 onChange={(e) => setAddress(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-medium"
@@ -321,7 +321,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  राज्य (State)
+                  State (राज्य)
                 </label>
                 <select
                   value={stateCode}
@@ -338,7 +338,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  शुरुआती बकाया राशि (Opening Balance ₹)
+                  Opening Balance ₹ (शुरुआती बकाया)
                 </label>
                 <input
                   type="number"
@@ -358,7 +358,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                 onClick={() => setIsAddingNew(false)}
                 className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition"
               >
-                रद्द करें
+                Cancel (रद्द करें)
               </button>
               <button
                 type="submit"
@@ -366,7 +366,7 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
                 className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs sm:text-sm font-extrabold transition shadow-xs flex items-center gap-1.5"
               >
                 <Check className="w-4 h-4" />
-                <span>{isSaving ? 'सेव हो रहा है...' : 'पार्टी सेव करें व चुनें'}</span>
+                <span>{isSaving ? 'Saving...' : 'Save & Select (सेव करें व चुनें)'}</span>
               </button>
             </div>
           </form>

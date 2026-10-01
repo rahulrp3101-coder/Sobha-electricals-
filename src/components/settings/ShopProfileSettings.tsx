@@ -1,29 +1,20 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { CompanyProfile } from '../../types';
 import { INDIAN_STATES } from '../../services/gstCalculator';
 import { 
   Store, Building2, Phone, Mail, MapPin, Hash, 
   CreditCard, QrCode, FileText, Check, Save, RotateCcw, AlertCircle,
   Lock, ShieldCheck, KeyRound, Eye, EyeOff,
-  Download, Upload, HardDrive, Cloud, CloudOff, RefreshCw, CheckCircle2,
-  ExternalLink, Sparkles, FolderArchive
+  Download, Upload, HardDrive, Cloud, CheckCircle2, Sparkles
 } from 'lucide-react';
 import { changeAdminCredentials } from '../../services/adminAuth';
 import { 
   downloadCompleteBackupJSON, 
-  restoreCompleteBackupJSON 
+  restoreCompleteBackupJSON,
+  saveToGoogleDriveOrShare,
+  getAutoBackupConfig,
+  setAutoBackupEnabled
 } from '../../services/backupService';
-import { 
-  getGoogleDriveStatus, 
-  connectGoogleDrive, 
-  disconnectGoogleDrive, 
-  uploadShopDataToGoogleDrive, 
-  restoreShopDataFromGoogleDrive,
-  setGoogleDriveAutoSync,
-  setCustomGoogleClientId,
-  initGoogleAuth,
-  GoogleDriveStatus
-} from '../../services/googleDriveStorage';
 
 interface ShopProfileSettingsProps {
   company: CompanyProfile;
@@ -54,121 +45,50 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
   const [securityError, setSecurityError] = useState<string | null>(null);
   const [isUpdatingSecurity, setIsUpdatingSecurity] = useState(false);
 
-  // Google Drive Client-Owned Cloud Sync State
-  const [gdriveStatus, setGdriveStatus] = useState<GoogleDriveStatus>(getGoogleDriveStatus);
-  const [isConnectingDrive, setIsConnectingDrive] = useState(false);
-  const [isSyncingDrive, setIsSyncingDrive] = useState(false);
-  const [isRestoringDrive, setIsRestoringDrive] = useState(false);
-  const [driveToast, setDriveToast] = useState<{ msg: string; isError?: boolean } | null>(null);
-  const [customClientIdInput, setCustomClientIdInput] = useState(gdriveStatus.customClientId || '');
-  const [showClientIdConfig, setShowClientIdConfig] = useState(false);
-
-  // Local JSON Backup / Restore State
+  // Backup & Storage State (Zero-latency persistent IndexedDB + Drive Share)
+  const [autoBackupConfig, setAutoBackupConfigState] = useState(getAutoBackupConfig);
   const [isDownloadingBackup, setIsDownloadingBackup] = useState(false);
   const [isRestoringFile, setIsRestoringFile] = useState(false);
-  const [backupToast, setBackupToast] = useState<{ msg: string; isError?: boolean } | null>(null);
+  const [isSavingToDrive, setIsSavingToDrive] = useState(false);
+  const [backupToast, setBackupToast] = useState<{ msg: string; isSuccess: boolean } | null>(null);
 
-  useEffect(() => {
-    setGdriveStatus(getGoogleDriveStatus());
-    const unsubscribe = initGoogleAuth(
-      () => setGdriveStatus(getGoogleDriveStatus()),
-      () => setGdriveStatus(getGoogleDriveStatus())
-    );
-    return () => {
-      if (typeof unsubscribe === 'function') unsubscribe();
-    };
-  }, []);
-
-  const showDriveToastMsg = (msg: string, isError = false) => {
-    setDriveToast({ msg, isError });
-    setTimeout(() => setDriveToast(null), 4000);
+  const showBackupToast = (msg: string, isSuccess: boolean = true) => {
+    setBackupToast({ msg, isSuccess });
+    setTimeout(() => setBackupToast(null), 4500);
   };
 
-  const showBackupToastMsg = (msg: string, isError = false) => {
-    setBackupToast({ msg, isError });
-    setTimeout(() => setBackupToast(null), 4000);
-  };
-
-  // Google Drive Connect Handler
-  const handleConnectDrive = async () => {
-    setIsConnectingDrive(true);
-    try {
-      const res = await connectGoogleDrive(customClientIdInput);
-      if (res.success) {
-        setGdriveStatus(getGoogleDriveStatus());
-        showDriveToastMsg(`Google Drive कनेक्ट हो गया: ${res.email}`);
-      } else {
-        showDriveToastMsg(res.error || 'Google Drive कनेक्ट विफल रहा।', true);
-      }
-    } finally {
-      setIsConnectingDrive(false);
-    }
-  };
-
-  // Google Drive Disconnect Handler
-  const handleDisconnectDrive = async () => {
-    await disconnectGoogleDrive();
-    setGdriveStatus(getGoogleDriveStatus());
-    showDriveToastMsg('Google Drive डिस्कनेक्ट कर दिया गया।');
-  };
-
-  // Google Drive Upload Handler
-  const handleUploadToDrive = async () => {
-    setIsSyncingDrive(true);
-    try {
-      const res = await uploadShopDataToGoogleDrive();
-      if (res.success) {
-        setGdriveStatus(getGoogleDriveStatus());
-        showDriveToastMsg(res.message);
-      } else {
-        showDriveToastMsg(res.message, true);
-      }
-    } finally {
-      setIsSyncingDrive(false);
-    }
-  };
-
-  // Google Drive Restore Handler
-  const handleRestoreFromDrive = async () => {
-    if (!window.confirm('सावधान: Google Drive से डेटा रीस्टोर करने पर वर्तमान ब्राउज़र डेटा अपडेट हो जाएगा। क्या आप जारी रखना चाहते हैं?')) {
-      return;
-    }
-
-    setIsRestoringDrive(true);
-    try {
-      const res = await restoreShopDataFromGoogleDrive();
-      if (res.success) {
-        showDriveToastMsg(res.message);
-        if (onDataReloaded) {
-          await onDataReloaded();
-        }
-      } else {
-        showDriveToastMsg(res.message, true);
-      }
-    } finally {
-      setIsRestoringDrive(false);
-    }
-  };
-
-  // Local JSON Backup Download
+  // Local JSON Backup Download (Requirement 5)
   const handleDownloadBackup = async () => {
     setIsDownloadingBackup(true);
     try {
-      const res = await downloadCompleteBackupJSON();
-      showBackupToastMsg(`बैकअप डाउनलोड पूर्ण: ${res.filename} (${res.sizeKB} KB)`);
+      const res = await downloadCompleteBackupJSON(false);
+      showBackupToast(`पूरा बैकअप डाउनलोड हुआ: ${res.filename} (${res.sizeKB} KB)`, true);
     } catch (err: any) {
-      showBackupToastMsg('बैकअप डाउनलोड विफल: ' + err.message, true);
+      showBackupToast('डाउनलोड में समस्या: ' + (err.message || 'त्रुटि'), false);
     } finally {
       setIsDownloadingBackup(false);
     }
   };
 
-  // Local JSON Backup Restore from File Picker
+  // Save to Google Drive or Native Share (Requirement 4 - Zero Auth Error!)
+  const handleSaveToGoogleDrive = async () => {
+    setIsSavingToDrive(true);
+    try {
+      const res = await saveToGoogleDriveOrShare();
+      showBackupToast(res.message, true);
+    } catch (err: any) {
+      showBackupToast('Google Drive में सेव करने में त्रुटि: ' + (err.message || 'त्रुटि'), false);
+    } finally {
+      setIsSavingToDrive(false);
+    }
+  };
+
+  // Local JSON Backup Restore from File Picker (Requirement 5)
   const handleFileRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!window.confirm(`क्या आप फ़ाइल '${file.name}' से पूरी दुकान का डेटा रीस्टोर करना चाहते हैं?`)) {
+    if (!window.confirm(`क्या आप फ़ाइल '${file.name}' से पूरी दुकान का डेटा रीस्टोर करना चाहते हैं? वर्तमान डेटा अपडेट हो जाएगा।`)) {
       e.target.value = '';
       return;
     }
@@ -178,21 +98,31 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
       const text = await file.text();
       const res = await restoreCompleteBackupJSON(text);
       if (res.success) {
-        showBackupToastMsg(
-          `${res.message} (${res.counts?.items} सामान, ${res.counts?.parties} पार्टियां, ${res.counts?.invoices} बिल रीस्टोर हुए)`
+        showBackupToast(
+          `${res.message} (${res.counts?.items || 0} सामान, ${res.counts?.parties || 0} पार्टियां, ${res.counts?.invoices || 0} बिल रीस्टोर हुए)`,
+          true
         );
         if (onDataReloaded) {
           await onDataReloaded();
         }
       } else {
-        showBackupToastMsg(res.message, true);
+        showBackupToast(res.message, false);
       }
     } catch (err: any) {
-      showBackupToastMsg('फ़ाइल पढ़ने में त्रुटि: ' + err.message, true);
+      showBackupToast('फ़ाइल पढ़ने में त्रुटि: ' + err.message, false);
     } finally {
       setIsRestoringFile(false);
       e.target.value = '';
     }
+  };
+
+  // Daily Auto-Backup Toggle (Requirement 2)
+  const handleToggleAutoBackup = () => {
+    const newVal = !autoBackupConfig.enabled;
+    setAutoBackupEnabled(newVal);
+    const updated = getAutoBackupConfig();
+    setAutoBackupConfigState(updated);
+    showBackupToast(newVal ? 'दैनिक 24 घंटे का ऑटो-बैकअप सक्रिय किया गया।' : 'दैनिक ऑटो-बैकअप बंद किया गया।', true);
   };
 
   const handleSecuritySubmit = async (e: React.FormEvent) => {
@@ -287,6 +217,153 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
           <span>दुकान की जानकारी और GST सेटिंग्स सफलतापूर्वक सेव हो गई हैं!</span>
         </div>
       )}
+
+      {/* Primary Data Backup & Restore Hub (Top of Settings) */}
+      <div className="bg-gradient-to-br from-slate-900 via-slate-800 to-indigo-950 text-white rounded-3xl p-5 sm:p-7 shadow-lg border border-slate-700/60 space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-700/60 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center text-indigo-400 shadow-inner">
+              <HardDrive className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base sm:text-lg font-black tracking-tight text-white">
+                  डेटा बैकअप व रीस्टोर केंद्र (Master Backup & Restore)
+                </h3>
+                <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2 py-0.5 rounded-full flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  सुरक्षित स्थानीय डेटाबेस
+                </span>
+              </div>
+              <p className="text-xs text-slate-300 mt-0.5">
+                दुकान का 100% डेटा आपके ब्राउज़र IndexedDB में स्थायी रहता है। बिना इंटरनेट भी सुरक्षित है।
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-medium text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-xl border border-slate-700">
+              🔒 100% Zero-Dependency
+            </span>
+          </div>
+        </div>
+
+        {/* Toast Alert */}
+        {backupToast && (
+          <div className={`p-3.5 rounded-2xl text-xs sm:text-sm font-bold flex items-center gap-2.5 shadow-md ${
+            backupToast.isSuccess
+              ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-200'
+              : 'bg-red-500/20 border border-red-500/40 text-red-200'
+          }`}>
+            {backupToast.isSuccess ? <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" /> : <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />}
+            <span>{backupToast.msg}</span>
+          </div>
+        )}
+
+        {/* Main 2 Large Action Buttons (Requirement 5) + Google Drive (Requirement 4) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+          {/* Button 1: Download Complete Backup */}
+          <button
+            type="button"
+            disabled={isDownloadingBackup}
+            onClick={handleDownloadBackup}
+            className="flex flex-col items-start p-4 sm:p-5 rounded-2xl bg-blue-600 hover:bg-blue-500 active:scale-98 text-white transition shadow-md border border-blue-400/30 text-left group"
+          >
+            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center mb-3 group-hover:bg-white/20 transition">
+              <Download className="w-5 h-5 text-white" />
+            </div>
+            <div className="font-black text-sm sm:text-base leading-snug">
+              💾 Download JSON Backup <span className="text-xs font-normal text-blue-200 block">(अभी पूरा बैकअप डाउनलोड करें)</span>
+            </div>
+            <div className="text-[11px] text-blue-100/80 mt-1 leading-normal">
+              1-Click instant download of all items, stock, parties and billing invoices in secure .json format.
+            </div>
+            <div className="mt-3 text-[11px] font-bold text-blue-200 bg-blue-700/60 px-2.5 py-1 rounded-lg">
+              {isDownloadingBackup ? 'Downloading...' : 'Download JSON Backup →'}
+            </div>
+          </button>
+
+          {/* Button 2: Restore from File */}
+          <label className="flex flex-col items-start p-4 sm:p-5 rounded-2xl bg-emerald-600 hover:bg-emerald-500 active:scale-98 text-white transition shadow-md border border-emerald-400/30 text-left group cursor-pointer">
+            <div className="w-10 h-10 rounded-xl bg-white/10 flex items-center justify-center mb-3 group-hover:bg-white/20 transition">
+              <Upload className="w-5 h-5 text-white" />
+            </div>
+            <div className="font-black text-sm sm:text-base leading-snug">
+              📥 Restore from Backup File <span className="text-xs font-normal text-emerald-200 block">(बैकअप से डेटा रीस्टोर करें)</span>
+            </div>
+            <div className="text-[11px] text-emerald-100/80 mt-1 leading-normal">
+              Select any previous .json backup file to immediately restore your items, bills and khata on any device.
+            </div>
+            <div className="mt-3 text-[11px] font-bold text-emerald-200 bg-emerald-700/60 px-2.5 py-1 rounded-lg">
+              {isRestoringFile ? 'Restoring Data...' : 'Restore File (फ़ाइल चुनें) →'}
+            </div>
+            <input
+              type="file"
+              accept=".json,application/json"
+              className="hidden"
+              disabled={isRestoringFile}
+              onChange={handleFileRestore}
+            />
+          </label>
+
+          {/* Button 3: Save to Google Drive (Requirement 4) */}
+          <button
+            type="button"
+            disabled={isSavingToDrive}
+            onClick={handleSaveToGoogleDrive}
+            className="flex flex-col items-start p-4 sm:p-5 rounded-2xl bg-slate-800/90 hover:bg-slate-700/90 active:scale-98 text-white transition shadow-md border border-slate-600/60 text-left group sm:col-span-2 lg:col-span-1"
+          >
+            <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/30 flex items-center justify-center mb-3 group-hover:bg-amber-500/30 transition text-amber-400">
+              <Cloud className="w-5 h-5" />
+            </div>
+            <div className="font-black text-sm sm:text-base leading-snug">
+              ☁️ Save to Google Drive <span className="text-xs font-normal text-amber-200 block">(Google Drive में सेव करें)</span>
+            </div>
+            <div className="text-[11px] text-slate-300 mt-1 leading-normal">
+              One-click direct save or share to your Google Drive folder without complicated OAuth errors.
+            </div>
+            <div className="mt-3 text-[11px] font-bold text-amber-300 bg-amber-500/20 px-2.5 py-1 rounded-lg border border-amber-400/30">
+              {isSavingToDrive ? 'Preparing...' : 'Save to Google Drive →'}
+            </div>
+          </button>
+        </div>
+
+        {/* 24-Hour Daily Auto-Backup Setting (Requirement 2) */}
+        <div className="pt-3 border-t border-slate-700/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
+          <div className="space-y-0.5">
+            <div className="flex items-center gap-2">
+              <span className="text-xs sm:text-sm font-bold text-white">
+                ⏰ 24-घंटे का दैनिक ऑटो-बैकअप (Daily Auto-Backup)
+              </span>
+              {autoBackupConfig.enabled && (
+                <span className="text-[10px] font-bold bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded-full">
+                  चालू (ON)
+                </span>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-300">
+              हर 24 घंटे में एक बार (या दिन का पहला बिल बनते ही) ब्राउज़र अपने आप 'VyaparPro_AutoBackup_YYYY-MM-DD.json' डाउनलोड कर लेगा।
+            </p>
+            {autoBackupConfig.lastDate && (
+              <div className="text-[10px] text-slate-400 font-mono pt-0.5">
+                अंतिम ऑटो-बैकअप: {autoBackupConfig.lastDate} {autoBackupConfig.lastTime || ''}
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={handleToggleAutoBackup}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-2 shrink-0 ${
+              autoBackupConfig.enabled
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white'
+                : 'bg-slate-700 hover:bg-slate-600 text-slate-300'
+            }`}
+          >
+            <span>{autoBackupConfig.enabled ? '✓ दैनिक ऑटो-बैकअप सक्रिय' : 'ऑटो-बैकअप बंद करें'}</span>
+          </button>
+        </div>
+      </div>
 
       {/* Settings Form */}
       <form onSubmit={handleSubmit} className="space-y-6">
@@ -445,35 +522,35 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
         <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 shadow-2xs space-y-4">
           <div className="flex items-center gap-2 border-b border-slate-100 pb-3">
             <QrCode className="w-4 h-4 text-emerald-600" />
-            <h3 className="text-sm font-bold text-slate-900">UPI और बैंक विवरण (Payment QR & Bank Details)</h3>
+            <h3 className="text-sm font-bold text-slate-900">UPI &amp; Bank Payment Details (UPI और बैंक विवरण)</h3>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                दुकान की UPI ID (GooglePay / PhonePe / Paytm / BHIM)
+                Shop UPI ID (दुकान की UPI ID)
               </label>
               <input
                 type="text"
                 value={formData.upiId || ''}
                 onChange={e => setFormData({ ...formData, upiId: e.target.value })}
-                placeholder="उदा. 9876543210@paytm या shop@okhdfcbank"
+                placeholder="e.g. shopname@okaxis / 9876543210@upi"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600 font-mono font-medium"
               />
               <p className="text-[11px] text-slate-500 mt-1">
-                इस UPI ID का QR कोड और पेमेंट लिंक WhatsApp बिलों में अपने आप जुड़ जाएगा।
+                Dynamic UPI QR code with exact bill amount will appear on screen and printed receipts (PhonePe/GPay/Paytm).
               </p>
             </div>
 
             <div>
               <label className="block text-xs font-semibold text-slate-700 mb-1">
-                बैंक का नाम (Bank Name)
+                Bank Name (बैंक का नाम)
               </label>
               <input
                 type="text"
                 value={formData.bankName || ''}
                 onChange={e => setFormData({ ...formData, bankName: e.target.value })}
-                placeholder="उदा. State Bank of India / HDFC Bank"
+                placeholder="e.g. State Bank of India / HDFC Bank"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-medium"
               />
             </div>
@@ -654,242 +731,6 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
             </button>
           </div>
         </form>
-      </div>
-
-      {/* Section 6: Customer-Owned Google Drive Cloud Sync (100% Privacy) */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 shadow-2xs space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-          <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-200">
-              <Cloud className="w-5 h-5" />
-            </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-bold text-slate-900">
-                  ग्राहक का निजी Google Drive स्टोरेज (Cloud Backup)
-                </h3>
-                {gdriveStatus.isConnected ? (
-                  <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
-                    कनेक्टेड
-                  </span>
-                ) : (
-                  <span className="text-[10px] font-bold bg-slate-100 text-slate-600 px-2 py-0.5 rounded-full">
-                    ऑफ़लाइन / डिस्कनेक्टेड
-                  </span>
-                )}
-              </div>
-              <p className="text-[11px] text-slate-500">
-                दुकान का सारा डेटा सीधे आपके अपने निजी Google Drive खाते में सुरक्षित सिंक होता है।
-              </p>
-            </div>
-          </div>
-
-          <div className="hidden sm:block text-right">
-            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg border border-emerald-200">
-              🔒 100% Client-Owned Data
-            </span>
-          </div>
-        </div>
-
-        {/* Toast Feedback */}
-        {driveToast && (
-          <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
-            driveToast.isError
-              ? 'bg-red-50 border border-red-200 text-red-700'
-              : 'bg-emerald-50 border border-emerald-200 text-emerald-800'
-          }`}>
-            {driveToast.isError ? <AlertCircle className="w-4 h-4 shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0" />}
-            <span>{driveToast.msg}</span>
-          </div>
-        )}
-
-        {/* Connected View vs Not Connected View */}
-        {gdriveStatus.isConnected ? (
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-              <div>
-                <div className="text-xs text-slate-500">कनेक्टेड Google खाता:</div>
-                <div className="text-sm font-bold text-slate-900 font-mono">
-                  {gdriveStatus.userEmail}
-                </div>
-                {gdriveStatus.lastSyncedAt && (
-                  <div className="text-[11px] text-slate-400 mt-0.5">
-                    अंतिम सिंक: <strong>{gdriveStatus.lastSyncedAt}</strong>
-                  </div>
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={handleDisconnectDrive}
-                className="self-start sm:self-auto px-3 py-1.5 bg-white hover:bg-red-50 text-red-600 border border-slate-200 hover:border-red-200 rounded-xl text-xs font-bold transition active:scale-95"
-              >
-                डिस्कनेक्ट करें
-              </button>
-            </div>
-
-            {/* Sync Actions Grid */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-slate-200">
-              <button
-                type="button"
-                disabled={isSyncingDrive}
-                onClick={handleUploadToDrive}
-                className="py-2.5 px-4 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs active:scale-98"
-              >
-                <Upload className="w-4 h-4" />
-                <span>{isSyncingDrive ? 'अपलोड हो रहा है...' : 'Google Drive पर तुरंत बैकअप भेजें'}</span>
-              </button>
-
-              <button
-                type="button"
-                disabled={isRestoringDrive}
-                onClick={handleRestoreFromDrive}
-                className="py-2.5 px-4 bg-white hover:bg-slate-100 disabled:opacity-50 text-slate-800 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 active:scale-98"
-              >
-                <Download className="w-4 h-4 text-emerald-600" />
-                <span>{isRestoringDrive ? 'रीस्टोर हो रहा है...' : 'Google Drive से डेटा रीस्टोर करें'}</span>
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
-            <p className="text-xs text-slate-600 leading-relaxed">
-              Google Drive कनेक्ट करने के बाद आपका सारा डेटा (आइटम, स्टॉक, ग्राहक, इनवॉइस) आपके अपने Google Drive में 
-              <strong> 'VyaparPro_Backup.json'</strong> के रूप में सुरक्षित रहेगा। किसी भी समय नया डिवाइस बदलने पर एक क्लिक में सारा हिसाब वापस आ जाएगा।
-            </p>
-
-            <div className="flex flex-wrap items-center gap-2.5 pt-1">
-              <button
-                type="button"
-                disabled={isConnectingDrive}
-                onClick={handleConnectDrive}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs sm:text-sm font-bold transition shadow-xs flex items-center gap-2 active:scale-98"
-              >
-                <Cloud className="w-4 h-4" />
-                <span>{isConnectingDrive ? 'कनेक्ट हो रहा है...' : 'Google Drive से कनेक्ट करें'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setShowClientIdConfig(!showClientIdConfig)}
-                className="px-3 py-2 text-slate-500 hover:text-slate-800 text-xs font-semibold transition"
-              >
-                {showClientIdConfig ? 'कस्टम ID बंद करें' : '⚙️ कस्टम Google Client ID (वैकल्पिक)'}
-              </button>
-            </div>
-
-            {showClientIdConfig && (
-              <div className="pt-2 border-t border-slate-200 space-y-1.5 text-xs animate-in fade-in">
-                <label className="block text-slate-700 font-bold">
-                  कस्टम Google OAuth Client ID:
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    placeholder="उदा. 123456789-xxx.apps.googleusercontent.com"
-                    value={customClientIdInput}
-                    onChange={e => {
-                      setCustomClientIdInput(e.target.value);
-                      setCustomGoogleClientId(e.target.value);
-                    }}
-                    className="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-blue-600"
-                  />
-                </div>
-                <p className="text-[10px] text-slate-400">
-                  यदि आप अपना निजी Google Cloud Console प्रोजेक्ट उपयोग करना चाहते हैं तो यहाँ Client ID डालें।
-                </p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Section 7: One-Click Offline Backup & Restore (Full Offline Control) */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 shadow-2xs space-y-4">
-        <div className="flex items-center gap-2.5 border-b border-slate-100 pb-3">
-          <div className="w-9 h-9 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center border border-purple-200">
-            <HardDrive className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-bold text-slate-900">
-              ऑफ़लाइन बैकअप व रीस्टोर (Local JSON Backup & Restore)
-            </h3>
-            <p className="text-[11px] text-slate-500">
-              बिना इंटरनेट के भी कभी भी अपनी दुकान का संपूर्ण डेटा कंप्यूटर या फोन में डाउनलोड करें और नए डिवाइस में 1 सेकंड में रीस्टोर करें।
-            </p>
-          </div>
-        </div>
-
-        {/* Backup Toast Feedback */}
-        {backupToast && (
-          <div className={`p-3 rounded-xl text-xs font-semibold flex items-center gap-2 ${
-            backupToast.isError
-              ? 'bg-red-50 border border-red-200 text-red-700'
-              : 'bg-emerald-50 border border-emerald-200 text-emerald-800'
-          }`}>
-            {backupToast.isError ? <AlertCircle className="w-4 h-4 shrink-0" /> : <CheckCircle2 className="w-4 h-4 shrink-0" />}
-            <span>{backupToast.msg}</span>
-          </div>
-        )}
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-          {/* Download JSON Backup Card */}
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 flex flex-col justify-between space-y-3">
-            <div>
-              <div className="flex items-center gap-1.5 font-bold text-xs text-slate-900">
-                <Download className="w-4 h-4 text-blue-600" />
-                <span>बैकअप डाउनलोड करें (Export .JSON)</span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-1">
-                सभी आइटम, स्टॉक, पार्टियां, इनवॉइस, पेमेंट और सेटिंग्स की एक मास्टर .JSON फ़ाइल डाउनलोड होगी।
-              </p>
-            </div>
-
-            <button
-              type="button"
-              disabled={isDownloadingBackup}
-              onClick={handleDownloadBackup}
-              className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs active:scale-98"
-            >
-              <Download className="w-4 h-4 text-emerald-400" />
-              <span>{isDownloadingBackup ? 'डाउनलोड हो रहा है...' : 'Download Complete Backup'}</span>
-            </button>
-          </div>
-
-          {/* Restore JSON Backup Card */}
-          <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 flex flex-col justify-between space-y-3">
-            <div>
-              <div className="flex items-center gap-1.5 font-bold text-xs text-slate-900">
-                <Upload className="w-4 h-4 text-emerald-600" />
-                <span>फ़ाइल से रीस्टोर करें (Import .JSON)</span>
-              </div>
-              <p className="text-[11px] text-slate-500 mt-1">
-                डाउनलोड की गई .JSON बैकअप फ़ाइल चुनें। आपका सारा हिसाब तुरंत रीस्टोर हो जाएगा।
-              </p>
-            </div>
-
-            <label className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-xs cursor-pointer active:scale-98">
-              <Upload className="w-4 h-4" />
-              <span>{isRestoringFile ? 'रीस्टोर हो रहा है...' : 'Restore Backup File'}</span>
-              <input
-                type="file"
-                accept=".json,application/json"
-                className="hidden"
-                disabled={isRestoringFile}
-                onChange={handleFileRestore}
-              />
-            </label>
-          </div>
-        </div>
-
-        {/* Ownership Assurance Callout */}
-        <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl text-[11px] text-blue-900 flex items-start gap-2">
-          <Sparkles className="w-4 h-4 text-blue-600 shrink-0 mt-0.5" />
-          <div>
-            <strong>100% डेटा सुरक्षा गारंटी:</strong> आपका डेटा किसी बाहरी सर्वर या डेवलपर पर निर्भर नहीं है। आप जब चाहें अपना डेटा एक्सपोर्ट करके अपने पास सुरक्षित रख सकते हैं।
-          </div>
-        </div>
       </div>
     </div>
   );

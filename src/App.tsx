@@ -24,6 +24,7 @@ import { A4InvoiceTemplate } from './components/invoices/A4InvoiceTemplate';
 import { ThermalReceiptTemplate } from './components/invoices/ThermalReceiptTemplate';
 import { InventoryMaster } from './components/inventory/InventoryMaster';
 import { PartiesLedger } from './components/parties/PartiesLedger';
+import { PurchasesAndVendors } from './components/purchases/PurchasesAndVendors';
 import { PaymentInModal } from './components/parties/PaymentInModal';
 import { GSTReportsView } from './components/reports/GSTReportsView';
 import { ShopProfileSettings } from './components/settings/ShopProfileSettings';
@@ -35,6 +36,8 @@ import {
   logoutAdmin, 
   AdminSession 
 } from './services/adminAuth';
+import { checkAndRunDailyAutoBackup } from './services/backupService';
+import { CheckCircle2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
 export default function App() {
@@ -63,6 +66,7 @@ export default function App() {
   const [payments, setPayments] = useState<PaymentTransaction[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [autoBackupNotice, setAutoBackupNotice] = useState<string | null>(null);
 
   // Online / Offline Connectivity & Sync
   const { 
@@ -78,6 +82,28 @@ export default function App() {
     if (typeof window !== 'undefined' && window.innerWidth < 1024) {
       setPosMode('MOBILE');
     }
+  }, []);
+
+  // Daily 24-hour Auto-Backup Scheduler (Requirement 2)
+  useEffect(() => {
+    const runAutoBackupCheck = async () => {
+      try {
+        const res = await checkAndRunDailyAutoBackup();
+        if (res.triggered && res.filename) {
+          setAutoBackupNotice(`दैनिक 24 घंटे का ऑटो-बैकअप सुरक्षित हो गया है: ${res.filename}`);
+          setTimeout(() => setAutoBackupNotice(null), 9000);
+        }
+      } catch (err) {
+        console.warn('Auto-backup check error:', err);
+      }
+    };
+
+    // Run on startup
+    runAutoBackupCheck();
+
+    // Check periodically every 20 minutes while app is running
+    const timer = setInterval(runAutoBackupCheck, 1000 * 60 * 20);
+    return () => clearInterval(timer);
   }, []);
 
   // Continuous Session Validation: Enforces Single Active Session
@@ -181,6 +207,14 @@ export default function App() {
       setViewingInvoice(saved);
       setViewingFormat(printFormat);
     }
+
+    // Trigger daily auto-backup if today's first bill (Requirement 2)
+    checkAndRunDailyAutoBackup().then(res => {
+      if (res.triggered && res.filename) {
+        setAutoBackupNotice(`दिन का पहला बिल: दैनिक ऑटो-बैकअप डाउनलोड हो गया (${res.filename})`);
+        setTimeout(() => setAutoBackupNotice(null), 9000);
+      }
+    }).catch(() => {});
 
     return saved;
   };
@@ -333,6 +367,24 @@ export default function App() {
           />
         )}
 
+        {activeTab === 'PURCHASES' && (
+          <PurchasesAndVendors
+            parties={parties}
+            items={items}
+            invoices={invoices}
+            payments={payments}
+            company={company}
+            onSaveInvoice={handleSaveInvoice}
+            onSaveParty={handleSaveParty}
+            onSaveItem={handleSaveItem}
+            onRecordPayment={handleRecordPayment}
+            onViewInvoice={(inv, fmt) => {
+              setViewingInvoice(inv);
+              setViewingFormat(fmt);
+            }}
+          />
+        )}
+
         {activeTab === 'INVOICES' && (
           <InvoiceList
             invoices={invoices}
@@ -405,6 +457,23 @@ export default function App() {
         company={company}
         onRecordPayment={handleRecordPayment}
       />
+
+      {/* Daily Auto-Backup Floating Notification */}
+      {autoBackupNotice && (
+        <div className="fixed top-16 right-4 z-50 max-w-sm bg-emerald-800 text-white text-xs px-4 py-3 rounded-2xl shadow-2xl border border-emerald-500/40 flex items-center justify-between gap-3 animate-in slide-in-from-top duration-300">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="w-5 h-5 text-emerald-300 shrink-0" />
+            <span className="font-semibold leading-tight">{autoBackupNotice}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setAutoBackupNotice(null)}
+            className="text-emerald-300 hover:text-white font-bold text-sm shrink-0 ml-1"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       {/* Offline Status Floating Banner */}
       <OfflineBanner
