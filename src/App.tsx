@@ -9,7 +9,7 @@ import {
   CompanyProfile, DocumentType 
 } from './types';
 import { 
-  getDB, getAllFromStore, putToStore, createInvoiceTransaction, 
+  getDB, getAllFromStore, putToStore, deleteFromStore, createInvoiceTransaction, 
   recordPaymentTransaction 
 } from './db/indexedDB';
 import { DEFAULT_COMPANY } from './db/defaultData';
@@ -25,6 +25,7 @@ import { ThermalReceiptTemplate } from './components/invoices/ThermalReceiptTemp
 import { InventoryMaster } from './components/inventory/InventoryMaster';
 import { PartiesLedger } from './components/parties/PartiesLedger';
 import { PurchasesAndVendors } from './components/purchases/PurchasesAndVendors';
+import { ExpenseManagement } from './components/expenses/ExpenseManagement';
 import { PaymentInModal } from './components/parties/PaymentInModal';
 import { GSTReportsView } from './components/reports/GSTReportsView';
 import { ShopProfileSettings } from './components/settings/ShopProfileSettings';
@@ -57,6 +58,9 @@ export default function App() {
 
   // Quick Payment In Modal
   const [isGlobalPaymentInOpen, setIsGlobalPaymentInOpen] = useState<boolean>(false);
+
+  // Direct Customer Ledger Navigation (Requirement 3)
+  const [selectedPartyIdForLedger, setSelectedPartyIdForLedger] = useState<string | null>(null);
 
   // Core Data Stores from IndexedDB
   const [company, setCompany] = useState<CompanyProfile>(DEFAULT_COMPANY);
@@ -237,10 +241,35 @@ export default function App() {
     await loadDatabaseData();
   };
 
+  // Handle Save Expense
+  const handleSaveExpense = async (expense: Expense) => {
+    await putToStore('expenses', expense);
+    await loadDatabaseData();
+  };
+
+  // Handle Delete Expense
+  const handleDeleteExpense = async (id: string) => {
+    await deleteFromStore('expenses', id);
+    await loadDatabaseData();
+  };
+
   // Handle Update Shop Settings
   const handleSaveCompany = async (updatedCompany: CompanyProfile) => {
     await putToStore('company', { id: 'primary', ...updatedCompany });
     setCompany(updatedCompany);
+  };
+
+  // Handle direct navigation from Invoice Register to Customer Ledger (Requirement 3)
+  const handleSelectPartyFromInvoice = (partyId: string, partyName: string) => {
+    const party = parties.find(
+      p => p.id === partyId || p.name.trim().toLowerCase() === partyName.trim().toLowerCase()
+    );
+    if (party) {
+      setSelectedPartyIdForLedger(party.id);
+    } else {
+      setSelectedPartyIdForLedger(partyId || partyName);
+    }
+    setActiveTab('PARTIES');
   };
 
   // Count low stock items for badge
@@ -397,6 +426,7 @@ export default function App() {
               setNewInvoiceDocType(type);
               setIsCreatingInvoice(true);
             }}
+            onSelectParty={handleSelectPartyFromInvoice}
           />
         )}
 
@@ -419,6 +449,17 @@ export default function App() {
               setViewingInvoice(inv);
               setViewingFormat(fmt);
             }}
+            initialPartyId={selectedPartyIdForLedger}
+            onClearInitialParty={() => setSelectedPartyIdForLedger(null)}
+          />
+        )}
+
+        {activeTab === 'EXPENSES' && (
+          <ExpenseManagement
+            expenses={expenses}
+            company={company}
+            onSaveExpense={handleSaveExpense}
+            onDeleteExpense={handleDeleteExpense}
           />
         )}
 

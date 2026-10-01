@@ -13,6 +13,7 @@ interface InvoiceListProps {
   company: CompanyProfile;
   onViewInvoice: (invoice: Invoice, format: 'a4' | 'thermal') => void;
   onNewInvoice: (type?: DocumentType) => void;
+  onSelectParty?: (partyId: string, partyName: string) => void;
 }
 
 export const InvoiceList: React.FC<InvoiceListProps> = ({
@@ -20,6 +21,7 @@ export const InvoiceList: React.FC<InvoiceListProps> = ({
   company,
   onViewInvoice,
   onNewInvoice,
+  onSelectParty,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [docFilter, setDocFilter] = useState<string>('ALL');
@@ -151,8 +153,29 @@ export const InvoiceList: React.FC<InvoiceListProps> = ({
                       </span>
                     </td>
                     <td className="py-3 px-4">
-                      <div className="font-semibold text-slate-900">{inv.partyName}</div>
-                      <div className="text-[10px] text-slate-400">{inv.partyState} {inv.partyGstin ? `· ${inv.partyGstin}` : ''}</div>
+                      {onSelectParty ? (
+                        <button
+                          type="button"
+                          onClick={() => onSelectParty(inv.partyId, inv.partyName)}
+                          className="text-left group flex flex-col items-start hover:opacity-90 transition cursor-pointer"
+                          title="Click to open Customer Ledger (ग्राहक खाता खोलें)"
+                        >
+                          <div className="font-bold text-blue-700 group-hover:text-blue-900 group-hover:underline flex items-center gap-1.5">
+                            <span>{inv.partyName}</span>
+                            <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200 px-1.5 py-0.5 rounded font-normal transition group-hover:bg-blue-600 group-hover:text-white">
+                              👁️ खाता
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            {inv.partyState} {inv.partyGstin ? `· ${inv.partyGstin}` : ''}
+                          </div>
+                        </button>
+                      ) : (
+                        <div>
+                          <div className="font-semibold text-slate-900">{inv.partyName}</div>
+                          <div className="text-[10px] text-slate-400">{inv.partyState} {inv.partyGstin ? `· ${inv.partyGstin}` : ''}</div>
+                        </div>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-right font-mono text-slate-700">
                       {formatINR(inv.subTotal)}

@@ -19,18 +19,19 @@ export function useOnlineStatus() {
   }, []);
 
   const triggerSync = useCallback(async () => {
-    if (!navigator.onLine || isSyncing) return;
+    if (isSyncing) return;
     setIsSyncing(true);
     try {
       const res = await processSyncQueue();
       if (res.syncedCount > 0) {
-        setLastSyncTime(new Date().toLocaleTimeString());
+        setLastSyncTime(new Date().toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' }));
       }
       await refreshSyncCount();
     } catch (err) {
-      console.error('Sync failed', err);
+      console.warn('Sync attempt completed with warnings:', err);
     } finally {
       setIsSyncing(false);
+      await refreshSyncCount();
     }
   }, [isSyncing, refreshSyncCount]);
 
@@ -39,6 +40,7 @@ export function useOnlineStatus() {
 
     const handleOnline = () => {
       setIsOnline(true);
+      // Automatically trigger sync when network reconnects (Requirement 4)
       triggerSync();
     };
 
@@ -49,10 +51,10 @@ export function useOnlineStatus() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Periodic check
+    // Periodic check for pending changes every 4 seconds
     const interval = setInterval(() => {
       refreshSyncCount();
-    }, 5000);
+    }, 4000);
 
     return () => {
       window.removeEventListener('online', handleOnline);

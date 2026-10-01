@@ -1,20 +1,29 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CompanyProfile } from '../../types';
 import { INDIAN_STATES } from '../../services/gstCalculator';
 import { 
   Store, Building2, Phone, Mail, MapPin, Hash, 
   CreditCard, QrCode, FileText, Check, Save, RotateCcw, AlertCircle,
   Lock, ShieldCheck, KeyRound, Eye, EyeOff,
-  Download, Upload, HardDrive, Cloud, CheckCircle2, Sparkles
+  Download, Upload, HardDrive, Cloud, CheckCircle2, Sparkles,
+  RefreshCw, Copy, ExternalLink, Code2, Database, Wifi, WifiOff
 } from 'lucide-react';
 import { changeAdminCredentials } from '../../services/adminAuth';
 import { 
   downloadCompleteBackupJSON, 
   restoreCompleteBackupJSON,
-  saveToGoogleDriveOrShare,
   getAutoBackupConfig,
   setAutoBackupEnabled
 } from '../../services/backupService';
+import {
+  getSupabaseConfig,
+  saveSupabaseConfig,
+  testSupabaseConnection,
+  performFullTwoWaySync,
+  generateSupabaseSQLSchema,
+  SupabaseConfig
+} from '../../services/supabaseService';
+import { getPendingSyncCount } from '../../db/indexedDB';
 
 interface ShopProfileSettingsProps {
   company: CompanyProfile;
@@ -45,19 +54,30 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
   const [securityError, setSecurityError] = useState<string | null>(null);
   const [isUpdatingSecurity, setIsUpdatingSecurity] = useState(false);
 
-  // Backup & Storage State (Zero-latency persistent IndexedDB + Drive Share)
+  // Backup & Storage State (Zero-latency persistent IndexedDB)
   const [autoBackupConfig, setAutoBackupConfigState] = useState(getAutoBackupConfig);
   const [isDownloadingBackup, setIsDownloadingBackup] = useState(false);
   const [isRestoringFile, setIsRestoringFile] = useState(false);
-  const [isSavingToDrive, setIsSavingToDrive] = useState(false);
   const [backupToast, setBackupToast] = useState<{ msg: string; isSuccess: boolean } | null>(null);
+
+  // Supabase Offline-First Architecture State
+  const [supabaseConfig, setSupabaseConfig] = useState<SupabaseConfig>(getSupabaseConfig);
+  const [isTestingSupabase, setIsTestingSupabase] = useState(false);
+  const [isSyncingSupabase, setIsSyncingSupabase] = useState(false);
+  const [copiedSchema, setCopiedSchema] = useState(false);
+  const [showSchemaBox, setShowSchemaBox] = useState(false);
+  const [pendingSyncCount, setPendingSyncCount] = useState(0);
+
+  useEffect(() => {
+    getPendingSyncCount().then(setPendingSyncCount).catch(() => {});
+  }, []);
 
   const showBackupToast = (msg: string, isSuccess: boolean = true) => {
     setBackupToast({ msg, isSuccess });
-    setTimeout(() => setBackupToast(null), 4500);
+    setTimeout(() => setBackupToast(null), 5000);
   };
 
-  // Local JSON Backup Download (Requirement 5)
+  // Local JSON Backup Download
   const handleDownloadBackup = async () => {
     setIsDownloadingBackup(true);
     try {
@@ -70,20 +90,77 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
     }
   };
 
-  // Save to Google Drive or Native Share (Requirement 4 - Zero Auth Error!)
-  const handleSaveToGoogleDrive = async () => {
-    setIsSavingToDrive(true);
+  // Supabase Field Update
+  const handleUpdateSupabaseUrl = (url: string) => {
+    const updated = { ...supabaseConfig, url, isConnected: Boolean(url.trim() && supabaseConfig.anonKey.trim()) };
+    setSupabaseConfig(updated);
+    saveSupabaseConfig({ url: url.trim() });
+  };
+
+  const handleUpdateSupabaseAnonKey = (anonKey: string) => {
+    const updated = { ...supabaseConfig, anonKey, isConnected: Boolean(supabaseConfig.url.trim() && anonKey.trim()) };
+    setSupabaseConfig(updated);
+    saveSupabaseConfig({ anonKey: anonKey.trim() });
+  };
+
+  // Test Supabase Connection
+  const handleTestConnection = async () => {
+    setIsTestingSupabase(true);
     try {
-      const res = await saveToGoogleDriveOrShare();
-      showBackupToast(res.message, true);
+      const res = await testSupabaseConnection();
+      showBackupToast(res.message, res.success);
+      setSupabaseConfig(getSupabaseConfig());
     } catch (err: any) {
-      showBackupToast('Google Drive में सेव करने में त्रुटि: ' + (err.message || 'त्रुटि'), false);
+      showBackupToast('Supabase कनेक्शन परीक्षण विफल: ' + (err.message || 'त्रुटि'), false);
     } finally {
-      setIsSavingToDrive(false);
+      setIsTestingSupabase(false);
     }
   };
 
-  // Local JSON Backup Restore from File Picker (Requirement 5)
+  // Manual Sync Now (Requirement 4)
+  const handleManualSyncNow = async () => {
+    setIsSyncingSupabase(true);
+    try {
+      const res = await performFullTwoWaySync();
+      if (res.success) {
+        showBackupToast(
+          `🟢 सिंक पूर्ण! ${res.pushedCount} रिकॉर्ड्स Supabase पर सुरक्षित हुए, ${res.pulledCount} क्लाउड से अपडेट हुए।`,
+          true
+        );
+        if (onDataReloaded) {
+          await onDataReloaded();
+        }
+      } else {
+        showBackupToast(`सिंक चेतावनी: ${res.error || 'त्रुटि'}`, false);
+      }
+      setSupabaseConfig(getSupabaseConfig());
+      getPendingSyncCount().then(setPendingSyncCount).catch(() => {});
+    } catch (err: any) {
+      showBackupToast('मैन्युअल सिंक में त्रुटि: ' + (err.message || 'त्रुटि'), false);
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
+  // Copy Supabase SQL Schema (Requirement 4)
+  const handleCopySQLSchema = () => {
+    const sql = generateSupabaseSQLSchema();
+    navigator.clipboard.writeText(sql);
+    setCopiedSchema(true);
+    showBackupToast('📋 Supabase SQL स्कीमा कोड कॉपी हो गया! Supabase SQL Editor में Run करें।', true);
+    setTimeout(() => setCopiedSchema(false), 3000);
+  };
+
+  // Toggle Auto Sync on Network Reconnect
+  const handleToggleAutoSync = () => {
+    const newVal = !supabaseConfig.autoSync;
+    const updated = { ...supabaseConfig, autoSync: newVal };
+    setSupabaseConfig(updated);
+    saveSupabaseConfig({ autoSync: newVal });
+    showBackupToast(newVal ? 'नेटवर्क री-कनेक्ट ऑटो-सिंक सक्रिय है।' : 'ऑटो-सिंक बंद किया गया।', true);
+  };
+
+  // Local JSON Backup Restore from File Picker
   const handleFileRestore = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -116,7 +193,7 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
     }
   };
 
-  // Daily Auto-Backup Toggle (Requirement 2)
+  // Daily Auto-Backup Toggle
   const handleToggleAutoBackup = () => {
     const newVal = !autoBackupConfig.enabled;
     setAutoBackupEnabled(newVal);
@@ -260,7 +337,7 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
           </div>
         )}
 
-        {/* Main 2 Large Action Buttons (Requirement 5) + Google Drive (Requirement 4) */}
+        {/* Main Action Buttons */}
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
           {/* Button 1: Download Complete Backup */}
           <button
@@ -306,29 +383,29 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
             />
           </label>
 
-          {/* Button 3: Save to Google Drive (Requirement 4) */}
+          {/* Button 3: Manual Cloud Sync Now (Requirement 4) */}
           <button
             type="button"
-            disabled={isSavingToDrive}
-            onClick={handleSaveToGoogleDrive}
+            disabled={isSyncingSupabase}
+            onClick={handleManualSyncNow}
             className="flex flex-col items-start p-4 sm:p-5 rounded-2xl bg-slate-800/90 hover:bg-slate-700/90 active:scale-98 text-white transition shadow-md border border-slate-600/60 text-left group sm:col-span-2 lg:col-span-1"
           >
-            <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/30 flex items-center justify-center mb-3 group-hover:bg-amber-500/30 transition text-amber-400">
-              <Cloud className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl bg-indigo-500/20 border border-indigo-400/30 flex items-center justify-center mb-3 group-hover:bg-indigo-500/30 transition text-indigo-400">
+              <RefreshCw className={`w-5 h-5 ${isSyncingSupabase ? 'animate-spin' : ''}`} />
             </div>
             <div className="font-black text-sm sm:text-base leading-snug">
-              ☁️ Save to Google Drive <span className="text-xs font-normal text-amber-200 block">(Google Drive में सेव करें)</span>
+              ⚡ Manual Sync Now <span className="text-xs font-normal text-indigo-200 block">(क्लाउड डेटाबेस सिंक करें)</span>
             </div>
             <div className="text-[11px] text-slate-300 mt-1 leading-normal">
-              One-click direct save or share to your Google Drive folder without complicated OAuth errors.
+              Push pending offline records and pull cloud updates immediately without waiting for auto-timer.
             </div>
-            <div className="mt-3 text-[11px] font-bold text-amber-300 bg-amber-500/20 px-2.5 py-1 rounded-lg border border-amber-400/30">
-              {isSavingToDrive ? 'Preparing...' : 'Save to Google Drive →'}
+            <div className="mt-3 text-[11px] font-bold text-indigo-300 bg-indigo-500/20 px-2.5 py-1 rounded-lg border border-indigo-400/30">
+              {isSyncingSupabase ? 'सिंक हो रहा है...' : 'Manual Sync Now →'}
             </div>
           </button>
         </div>
 
-        {/* 24-Hour Daily Auto-Backup Setting (Requirement 2) */}
+        {/* 24-Hour Daily Auto-Backup Setting */}
         <div className="pt-3 border-t border-slate-700/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-slate-800/50 p-4 rounded-2xl border border-slate-700">
           <div className="space-y-0.5">
             <div className="flex items-center gap-2">
@@ -363,6 +440,199 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
             <span>{autoBackupConfig.enabled ? '✓ दैनिक ऑटो-बैकअप सक्रिय' : 'ऑटो-बैकअप बंद करें'}</span>
           </button>
         </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* SUPABASE OFFLINE-FIRST ARCHITECTURE & CLOUD SYNC HUB (Requirements 2, 3, 4) */}
+      {/* ========================================================================= */}
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-sm p-5 sm:p-7 space-y-6">
+        {/* Hub Header */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-2xl bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-600 shadow-2xs">
+              <Database className="w-6 h-6" />
+            </div>
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-base sm:text-lg font-black tracking-tight text-slate-900">
+                  Supabase क्लाउड सिंक सेटिंग्स (Cloud Database & Auto-Sync)
+                </h3>
+                {supabaseConfig.isConnected ? (
+                  <span className="text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-600 animate-pulse" />
+                    🟢 कनेक्टेड (Connected)
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-bold bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded-full">
+                    ⚪ असंपर्कित (Not Configured)
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-slate-500 mt-0.5">
+                <strong>Offline-First Architecture:</strong> बिलिंग 0ms में स्थानीय IndexedDB में होती है। इंटरनेट बंद होने पर भी कोई रुकावट नहीं; नेट आते ही स्वतः Supabase पर सिंक हो जाएगा।
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 self-start sm:self-auto">
+            <button
+              type="button"
+              onClick={handleCopySQLSchema}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-900 text-white hover:bg-slate-800 transition shadow-xs"
+              title="Copy SQL Schema for Supabase SQL Editor"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>{copiedSchema ? '✓ कॉपी हुआ!' : '📋 Copy Supabase SQL Schema'}</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Supabase URL & Anon Key Inputs (Requirement 2) */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-bold text-slate-800 mb-1 flex items-center justify-between">
+              <span>Supabase Project URL *</span>
+              <span className="text-[10px] font-mono text-slate-400">https://xyz.supabase.co</span>
+            </label>
+            <input
+              type="url"
+              placeholder="https://your-project-id.supabase.co"
+              value={supabaseConfig.url}
+              onChange={(e) => handleUpdateSupabaseUrl(e.target.value)}
+              className="w-full text-xs font-mono px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white text-slate-900 placeholder:text-slate-400"
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Supabase Dashboard ➔ Project Settings ➔ API ➔ Project URL
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-xs font-bold text-slate-800 mb-1 flex items-center justify-between">
+              <span>Supabase Anon / Public Key *</span>
+              <span className="text-[10px] font-mono text-slate-400">anon public key</span>
+            </label>
+            <input
+              type="password"
+              placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+              value={supabaseConfig.anonKey}
+              onChange={(e) => handleUpdateSupabaseAnonKey(e.target.value)}
+              className="w-full text-xs font-mono px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-blue-500 bg-slate-50 focus:bg-white text-slate-900 placeholder:text-slate-400"
+            />
+            <p className="text-[10px] text-slate-500 mt-1">
+              Supabase Dashboard ➔ Project Settings ➔ API ➔ Project API keys ➔ anon public
+            </p>
+          </div>
+        </div>
+
+        {/* Action Buttons & Sync Triggers */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-slate-100">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Test Connection Button */}
+            <button
+              type="button"
+              disabled={isTestingSupabase || !supabaseConfig.url}
+              onClick={handleTestConnection}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isTestingSupabase ? 'animate-spin' : ''}`} />
+              <span>{isTestingSupabase ? 'जांच हो रही है...' : '🔌 Test Connection (कनेक्शन जांचें)'}</span>
+            </button>
+
+            {/* Manual Sync Now Button (Requirement 4) */}
+            <button
+              type="button"
+              disabled={isSyncingSupabase}
+              onClick={handleManualSyncNow}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition shadow-xs disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSupabase ? 'animate-spin' : ''}`} />
+              <span>{isSyncingSupabase ? 'सिंक हो रहा है...' : '🔄 Manual Sync Now (अभी सिंक करें)'}</span>
+            </button>
+
+            {/* Toggle SQL Schema View */}
+            <button
+              type="button"
+              onClick={() => setShowSchemaBox(!showSchemaBox)}
+              className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-100 text-slate-700 hover:bg-slate-200 transition"
+            >
+              <Code2 className="w-3.5 h-3.5 text-slate-500" />
+              <span>{showSchemaBox ? 'SQL स्कीमा छिपाएं' : '👁️ View Supabase SQL Schema'}</span>
+            </button>
+          </div>
+
+          {/* Auto Sync on Network Reconnect Switch */}
+          <div className="flex items-center gap-3 bg-slate-50 px-3.5 py-1.5 rounded-xl border border-slate-200">
+            <div className="text-[11px] font-medium text-slate-700">
+              नेटवर्क री-कनेक्ट ऑटो-सिंक: <strong>{supabaseConfig.autoSync ? 'चालू (ON)' : 'बंद (OFF)'}</strong>
+            </div>
+            <button
+              type="button"
+              onClick={handleToggleAutoSync}
+              className={`w-9 h-5 rounded-full p-0.5 transition-colors duration-200 ease-in-out ${
+                supabaseConfig.autoSync ? 'bg-emerald-600' : 'bg-slate-300'
+              }`}
+            >
+              <div
+                className={`w-4 h-4 rounded-full bg-white transition-transform duration-200 ease-in-out shadow-xs ${
+                  supabaseConfig.autoSync ? 'translate-x-4' : 'translate-x-0'
+                }`}
+              />
+            </button>
+          </div>
+        </div>
+
+        {/* Sync Status Banner */}
+        <div className="bg-slate-50 rounded-2xl p-4 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5">
+            {pendingSyncCount > 0 ? (
+              <span className="w-3 h-3 rounded-full bg-amber-500 animate-pulse shrink-0" />
+            ) : (
+              <span className="w-3 h-3 rounded-full bg-emerald-500 shrink-0" />
+            )}
+            <div className="text-xs">
+              <span className="font-bold text-slate-800">
+                {pendingSyncCount > 0
+                  ? `🟡 ${pendingSyncCount} पेंडिंग बदलाव (ऑफ़लाइन कतार में सुरक्षित हैं)`
+                  : '🟢 सभी रिकॉर्ड्स Supabase क्लाउड व स्थानीय IndexedDB में सुरक्षित हैं'}
+              </span>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                अंतिम सिंक समय: {supabaseConfig.lastSyncedAt || 'अभी तक कोई सिंक नहीं हुआ'}
+              </p>
+            </div>
+          </div>
+
+          <div className="text-[11px] text-slate-500 font-mono bg-white px-3 py-1.5 rounded-xl border border-slate-200">
+            टेबल्स: items, parties, invoices, purchases, expenses, payments
+          </div>
+        </div>
+
+        {/* Expandable Supabase SQL DDL Schema Code Box (Requirement 3 & 4) */}
+        {showSchemaBox && (
+          <div className="bg-slate-900 rounded-2xl p-4 sm:p-5 text-white space-y-3 animate-in fade-in duration-200 border border-slate-800">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+              <div>
+                <span className="text-xs font-bold text-emerald-400 font-mono">
+                  Supabase PostgreSQL SQL DDL Schema (6 Tables)
+                </span>
+                <p className="text-[11px] text-slate-400 mt-0.5">
+                  इसे कॉपी करके Supabase Dashboard ➔ SQL Editor ➔ New Query में Paste करके Run करें:
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCopySQLSchema}
+                className="flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-bold bg-emerald-600 hover:bg-emerald-500 text-white transition"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>{copiedSchema ? '✓ कॉपी हुआ!' : 'Copy Code'}</span>
+              </button>
+            </div>
+
+            <pre className="text-[11px] font-mono leading-relaxed text-emerald-300/90 bg-slate-950 p-4 rounded-xl overflow-x-auto max-h-72 border border-slate-800/80">
+              {generateSupabaseSQLSchema()}
+            </pre>
+          </div>
+        )}
       </div>
 
       {/* Settings Form */}

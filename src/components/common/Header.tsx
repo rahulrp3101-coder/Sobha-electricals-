@@ -2,12 +2,13 @@ import React, { useState } from 'react';
 import { 
   ShoppingBag, FileText, Package, Users, BarChart3, 
   Layers, Monitor, Smartphone, RefreshCw, Wifi, WifiOff, Download,
-  Settings, ArrowDownLeft, Store, LogOut, ShieldCheck, Building2
+  Settings, ArrowDownLeft, Store, LogOut, ShieldCheck, Building2,
+  Wallet, Menu, X
 } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 import { CompanyProfile } from '../../types';
 
-export type MainTab = 'POS' | 'PURCHASES' | 'INVENTORY' | 'PARTIES' | 'SETTINGS' | 'INVOICES' | 'REPORTS' | 'ARCHITECTURE';
+export type MainTab = 'POS' | 'PURCHASES' | 'INVENTORY' | 'PARTIES' | 'EXPENSES' | 'SETTINGS' | 'INVOICES' | 'REPORTS' | 'ARCHITECTURE';
 
 interface HeaderProps {
   activeTab: MainTab;
@@ -41,6 +42,7 @@ export const Header: React.FC<HeaderProps> = ({
   const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
+  const [showMobileNav, setShowMobileNav] = useState(false);
 
   const mainTabs = [
     { id: 'POS' as MainTab, label: 'Billing (बिलिंग)', icon: ShoppingBag },
@@ -101,7 +103,7 @@ export const Header: React.FC<HeaderProps> = ({
           );
         })}
 
-        {/* Secondary: Invoices, Reports & Settings */}
+        {/* Secondary: Invoices, Expenses, Reports & Settings */}
         <button
           onClick={() => onSelectTab('INVOICES')}
           className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
@@ -112,6 +114,18 @@ export const Header: React.FC<HeaderProps> = ({
         >
           <FileText className="w-3.5 h-3.5" />
           <span>Invoices (बिल सूची)</span>
+        </button>
+
+        <button
+          onClick={() => onSelectTab('EXPENSES')}
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
+            activeTab === 'EXPENSES'
+              ? 'bg-slate-900 text-white shadow-2xs font-bold'
+              : 'text-slate-500 hover:text-slate-800 hover:bg-slate-100'
+          }`}
+        >
+          <Wallet className="w-3.5 h-3.5" />
+          <span>Expenses (दुकान खर्च)</span>
         </button>
 
         <button
@@ -141,6 +155,14 @@ export const Header: React.FC<HeaderProps> = ({
 
       {/* Zone 3: Quick Action Buttons, Admin Status, and Logout */}
       <div className="flex items-center gap-1.5 sm:gap-2">
+        {/* Mobile menu toggle button */}
+        <button
+          onClick={() => setShowMobileNav(!showMobileNav)}
+          className="md:hidden p-1.5 rounded-lg text-slate-600 hover:bg-slate-100 transition"
+          aria-label="Navigation Menu"
+        >
+          {showMobileNav ? <X className="w-5 h-5 text-slate-800" /> : <Menu className="w-5 h-5 text-slate-700" />}
+        </button>
         {/* Quick Payment In Button */}
         {onOpenPaymentIn && (
           <button
@@ -154,35 +176,74 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        {/* Sync & Connectivity Status */}
-        <button
-          onClick={onTriggerSync}
-          disabled={!isOnline || isSyncing}
-          className={`flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-medium border transition ${
-            !isOnline
-              ? 'bg-amber-50 text-amber-800 border-amber-300'
-              : pendingSyncCount > 0
-              ? 'bg-blue-50 text-blue-700 border-blue-300'
-              : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-          }`}
-          title={isOnline ? 'Online - Click to trigger cloud sync' : 'Offline mode - invoices queued locally'}
-        >
-          {isOnline ? (
-            <Wifi className="w-3.5 h-3.5 text-emerald-600" />
-          ) : (
-            <WifiOff className="w-3.5 h-3.5 text-amber-600" />
+        {/* Sync & Connectivity Status Indicator (Requirement 4) */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={onTriggerSync}
+            disabled={isSyncing}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition shadow-2xs ${
+              isSyncing
+                ? 'bg-blue-50 text-blue-800 border-blue-300 ring-2 ring-blue-200'
+                : !isOnline
+                ? 'bg-amber-50 text-amber-900 border-amber-300'
+                : pendingSyncCount > 0
+                ? 'bg-amber-50 text-amber-800 border-amber-300'
+                : 'bg-emerald-50 text-emerald-800 border-emerald-300'
+            }`}
+            title="क्लाउड सिंक स्थिति (Manual Sync Now के लिए क्लिक करें)"
+          >
+            {isSyncing ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
+                <span className="hidden xl:inline">🔵 सिंक हो रहा है... (Syncing...)</span>
+                <span className="xl:hidden sm:inline">🔵 सिंक हो रहा है...</span>
+                <span className="sm:hidden">🔵 Syncing...</span>
+              </>
+            ) : !isOnline ? (
+              <>
+                <WifiOff className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span className="hidden xl:inline">
+                  🟡 ऑफ़लाइन - {pendingSyncCount} पेंडिंग बदलाव (वापस ऑनलाइन आने पर स्वतः सिंक होंगे)
+                </span>
+                <span className="xl:hidden sm:inline">
+                  🟡 ऑफ़लाइन ({pendingSyncCount} पेंडिंग)
+                </span>
+                <span className="sm:hidden">🟡 Offline ({pendingSyncCount})</span>
+              </>
+            ) : pendingSyncCount > 0 ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span className="hidden xl:inline">
+                  🟡 {pendingSyncCount} पेंडिंग बदलाव (क्लिक करके सिंक करें)
+                </span>
+                <span className="xl:hidden sm:inline">
+                  🟡 {pendingSyncCount} पेंडिंग बदलाव
+                </span>
+                <span className="sm:hidden">🟡 Sync ({pendingSyncCount})</span>
+              </>
+            ) : (
+              <>
+                <Wifi className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span className="hidden xl:inline">🟢 ऑनलाइन - क्लाउड सिंक सुरक्षित (Synced)</span>
+                <span className="xl:hidden sm:inline">🟢 ऑनलाइन (Synced)</span>
+                <span className="sm:hidden">🟢 Synced</span>
+              </>
+            )}
+          </button>
+
+          {/* Quick Manual Sync Now Button */}
+          {onTriggerSync && (
+            <button
+              onClick={onTriggerSync}
+              disabled={isSyncing}
+              className="hidden lg:flex items-center gap-1 px-2 py-1.5 text-xs font-semibold text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-slate-200 transition"
+              title="Manual Sync Now - अभी तुरंत क्लाउड सिंक चलाएं"
+            >
+              <RefreshCw className={`w-3 h-3 text-slate-500 ${isSyncing ? 'animate-spin' : ''}`} />
+              <span className="text-[11px]">Sync Now</span>
+            </button>
           )}
-
-          <span className="hidden sm:inline">
-            {!isOnline
-              ? `Offline (${pendingSyncCount})`
-              : pendingSyncCount > 0
-              ? `Syncing (${pendingSyncCount})`
-              : 'Synced'}
-          </span>
-
-          {isSyncing && <RefreshCw className="w-3 h-3 animate-spin text-blue-600" />}
-        </button>
+        </div>
 
         {/* In-App PWA Install Button */}
         {!isInstalled && isInstallable && (
@@ -243,6 +304,117 @@ export const Header: React.FC<HeaderProps> = ({
                 हाँ, लॉग आउट करें
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mobile Navigation Drawer / Dropdown */}
+      {showMobileNav && (
+        <div className="fixed inset-x-0 top-16 z-40 bg-white border-b border-slate-200 shadow-2xl p-4 md:hidden animate-in slide-in-from-top-2 duration-200">
+          <div className="grid grid-cols-2 gap-2 text-xs font-semibold">
+            <button
+              onClick={() => { onSelectTab('POS'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'POS' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <ShoppingBag className="w-4 h-4 text-blue-600" />
+              <div>
+                <div>Billing</div>
+                <div className="text-[10px] text-slate-400 font-normal">बिलिंग व POS</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('PURCHASES'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'PURCHASES' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <Building2 className="w-4 h-4 text-purple-600" />
+              <div>
+                <div>Purchases</div>
+                <div className="text-[10px] text-slate-400 font-normal">खरीद व सप्लायर</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('INVENTORY'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'INVENTORY' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <Package className="w-4 h-4 text-amber-600" />
+              <div>
+                <div>Inventory</div>
+                <div className="text-[10px] text-slate-400 font-normal">स्टॉक व सामान</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('PARTIES'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'PARTIES' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <Users className="w-4 h-4 text-emerald-600" />
+              <div>
+                <div>Customers</div>
+                <div className="text-[10px] text-slate-400 font-normal">ग्राहक खाता बही</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('EXPENSES'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'EXPENSES' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <Wallet className="w-4 h-4 text-rose-600" />
+              <div>
+                <div>Expenses</div>
+                <div className="text-[10px] text-slate-400 font-normal">दुकान खर्च</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('REPORTS'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'REPORTS' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <BarChart3 className="w-4 h-4 text-indigo-600" />
+              <div>
+                <div>GST Reports</div>
+                <div className="text-[10px] text-slate-400 font-normal">GSTR-1, GSTR-2, P&L</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('INVOICES'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'INVOICES' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <FileText className="w-4 h-4 text-sky-600" />
+              <div>
+                <div>Invoices</div>
+                <div className="text-[10px] text-slate-400 font-normal">सभी बिल सूची</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('SETTINGS'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'SETTINGS' ? 'bg-blue-50 text-blue-700 border-blue-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <Settings className="w-4 h-4 text-slate-600" />
+              <div>
+                <div>Settings</div>
+                <div className="text-[10px] text-slate-400 font-normal">दुकान प्रोफाइल व बैकअप</div>
+              </div>
+            </button>
           </div>
         </div>
       )}

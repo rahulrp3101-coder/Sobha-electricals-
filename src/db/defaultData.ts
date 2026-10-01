@@ -215,7 +215,8 @@ export const INITIAL_PARTIES: Party[] = [
     stateCode: '27',
     address: 'Shop 4, Shivaji Nagar, Pune',
     creditLimit: 50000,
-    currentBalance: 12450, // They owe us (Receivable)
+    openingBalance: 14844,
+    currentBalance: 12450, // 14844 opening - 5000 advance pay + 2606 unpaid bill = 12450
     createdAt: '2026-01-05T10:30:00Z',
     updatedAt: '2026-01-05T10:30:00Z',
   },
@@ -230,6 +231,7 @@ export const INITIAL_PARTIES: Party[] = [
     stateCode: '29', // Inter-state IGST test case!
     address: 'Sector 5, HSR Layout, Bengaluru',
     creditLimit: 100000,
+    openingBalance: 28900,
     currentBalance: 28900, // Receivable
     createdAt: '2026-01-08T11:15:00Z',
     updatedAt: '2026-01-08T11:15:00Z',
@@ -245,6 +247,7 @@ export const INITIAL_PARTIES: Party[] = [
     stateCode: '27',
     address: 'Gultekdi Market Yard, Pune',
     creditLimit: 75000,
+    openingBalance: 8600,
     currentBalance: 8600, // Receivable
     createdAt: '2026-01-12T14:00:00Z',
     updatedAt: '2026-01-12T14:00:00Z',
@@ -260,7 +263,8 @@ export const INITIAL_PARTIES: Party[] = [
     stateCode: '27',
     address: 'Plot 88, MIDC Bhosari, Pune',
     creditLimit: 200000,
-    currentBalance: -45000, // We owe them (Payable)
+    openingBalance: -70000,
+    currentBalance: -45000, // -70000 opening + 25000 payment out = -45000
     createdAt: '2026-01-02T10:00:00Z',
     updatedAt: '2026-01-02T10:00:00Z',
   },
@@ -275,6 +279,7 @@ export const INITIAL_PARTIES: Party[] = [
     stateCode: '24', // Inter-state purchase
     address: 'GIDC Industrial Estate, Surat, Gujarat',
     creditLimit: 300000,
+    openingBalance: -32000,
     currentBalance: -32000, // We owe them (Payable)
     createdAt: '2026-01-04T12:00:00Z',
     updatedAt: '2026-01-04T12:00:00Z',

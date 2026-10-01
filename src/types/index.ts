@@ -155,14 +155,30 @@ export interface PaymentTransaction {
   createdAt: string;
 }
 
+export type ExpenseCategory = 
+  | 'RENT' 
+  | 'ELECTRICITY' 
+  | 'SALARY' 
+  | 'FREIGHT' 
+  | 'OFFICE' 
+  | 'MAINTENANCE' 
+  | 'MARKETING'
+  | 'UTILITIES'
+  | 'LOGISTICS'
+  | 'OTHER';
+
 export interface Expense {
   id: string;
-  category: 'RENT' | 'SALARY' | 'UTILITIES' | 'LOGISTICS' | 'MARKETING' | 'OFFICE' | 'OTHER';
+  category: ExpenseCategory | string;
   title: string;
   amount: number;
   date: string;
   paymentMode: PaymentMode;
   notes?: string;
+  isGstApplicable?: boolean;
+  gstRate?: number;
+  taxAmount?: number;
+  receiptPhoto?: string;
   createdAt: string;
 }
 
@@ -178,9 +194,11 @@ export interface DaySummary {
 
 export interface SyncQueueItem {
   id: string;
-  entity: 'INVOICE' | 'ITEM' | 'PARTY' | 'PAYMENT';
-  action: 'CREATE' | 'UPDATE' | 'DELETE';
+  entity: 'INVOICE' | 'PURCHASE' | 'ITEM' | 'PARTY' | 'PAYMENT' | 'EXPENSE';
+  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'INSERT';
   payload: any;
   timestamp: number;
   attempts: number;
+  is_synced?: boolean;
+  sync_action?: 'INSERT' | 'UPDATE' | 'DELETE';
 }

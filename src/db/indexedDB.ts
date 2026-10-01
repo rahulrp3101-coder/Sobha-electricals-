@@ -1,14 +1,14 @@
 /**
  * Offline-First IndexedDB Storage Engine for Vyapar Pro
- * Provides seamless local persistence, automatic schema upgrades,
- * and a robust offline synchronization queue.
+ * Provides seamless 0ms local-first persistence, zero-latency billing,
+ * and a robust offline synchronization queue for Supabase cloud sync.
  */
 
 import { CompanyProfile, Item, Party, Invoice, PaymentTransaction, Expense, SyncQueueItem } from '../types';
 import { DEFAULT_COMPANY, INITIAL_ITEMS, INITIAL_PARTIES, INITIAL_INVOICES, INITIAL_PAYMENTS, INITIAL_EXPENSES } from './defaultData';
 
-const DB_NAME = 'VyaparPro_OfflineDB_v1';
-const DB_VERSION = 1;
+const DB_NAME = 'VyaparPro_OfflineDB_v2';
+const DB_VERSION = 2;
 
 let dbInstance: IDBDatabase | null = null;
 
@@ -21,42 +21,67 @@ export async function getDB(): Promise<IDBDatabase> {
     request.onupgradeneeded = (event) => {
       const db = (event.target as IDBOpenDBRequest).result;
 
+      // 1. Items Store
       if (!db.objectStoreNames.contains('items')) {
         const itemStore = db.createObjectStore('items', { keyPath: 'id' });
         itemStore.createIndex('barcode', 'barcode', { unique: false });
         itemStore.createIndex('category', 'category', { unique: false });
+        itemStore.createIndex('is_synced', 'is_synced', { unique: false });
       }
 
+      // 2. Parties Store (Customers & Suppliers)
       if (!db.objectStoreNames.contains('parties')) {
         const partyStore = db.createObjectStore('parties', { keyPath: 'id' });
         partyStore.createIndex('phone', 'phone', { unique: false });
         partyStore.createIndex('type', 'type', { unique: false });
+        partyStore.createIndex('is_synced', 'is_synced', { unique: false });
       }
 
+      // 3. Invoices Store (Sales & Purchases)
       if (!db.objectStoreNames.contains('invoices')) {
         const invStore = db.createObjectStore('invoices', { keyPath: 'id' });
-        invStore.createIndex('invoiceNumber', 'invoiceNumber', { unique: true });
+        invStore.createIndex('invoiceNumber', 'invoiceNumber', { unique: false });
         invStore.createIndex('partyId', 'partyId', { unique: false });
         invStore.createIndex('date', 'date', { unique: false });
-        invStore.createIndex('isSynced', 'isSynced', { unique: false });
+        invStore.createIndex('is_synced', 'is_synced', { unique: false });
       }
 
+      // 4. Purchases Store (Vendor Purchases)
+      if (!db.objectStoreNames.contains('purchases')) {
+        const purStore = db.createObjectStore('purchases', { keyPath: 'id' });
+        purStore.createIndex('bill_number', 'bill_number', { unique: false });
+        purStore.createIndex('supplier_id', 'supplier_id', { unique: false });
+        purStore.createIndex('date', 'date', { unique: false });
+        purStore.createIndex('is_synced', 'is_synced', { unique: false });
+      }
+
+      // 5. Payments Store
       if (!db.objectStoreNames.contains('payments')) {
         const payStore = db.createObjectStore('payments', { keyPath: 'id' });
         payStore.createIndex('partyId', 'partyId', { unique: false });
+        payStore.createIndex('type', 'type', { unique: false });
+        payStore.createIndex('is_synced', 'is_synced', { unique: false });
       }
 
+      // 6. Expenses Store
       if (!db.objectStoreNames.contains('expenses')) {
-        db.createObjectStore('expenses', { keyPath: 'id' });
+        const expStore = db.createObjectStore('expenses', { keyPath: 'id' });
+        expStore.createIndex('category', 'category', { unique: false });
+        expStore.createIndex('date', 'date', { unique: false });
+        expStore.createIndex('is_synced', 'is_synced', { unique: false });
       }
 
+      // 7. Company Profile Store
       if (!db.objectStoreNames.contains('company')) {
         db.createObjectStore('company', { keyPath: 'id' });
       }
 
+      // 8. Offline Sync Queue Store
       if (!db.objectStoreNames.contains('sync_queue')) {
         const queueStore = db.createObjectStore('sync_queue', { keyPath: 'id' });
         queueStore.createIndex('timestamp', 'timestamp', { unique: false });
+        queueStore.createIndex('entity', 'entity', { unique: false });
+        queueStore.createIndex('is_synced', 'is_synced', { unique: false });
       }
     };
 
@@ -83,11 +108,11 @@ async function seedInitialDataIfEmpty(db: IDBDatabase): Promise<void> {
         // Database is empty, seed initial data
         const writeTx = db.transaction(['items', 'parties', 'invoices', 'payments', 'expenses', 'company'], 'readwrite');
         
-        INITIAL_ITEMS.forEach(i => writeTx.objectStore('items').put(i));
-        INITIAL_PARTIES.forEach(p => writeTx.objectStore('parties').put(p));
-        INITIAL_INVOICES.forEach(inv => writeTx.objectStore('invoices').put(inv));
-        INITIAL_PAYMENTS.forEach(pay => writeTx.objectStore('payments').put(pay));
-        INITIAL_EXPENSES.forEach(e => writeTx.objectStore('expenses').put(e));
+        INITIAL_ITEMS.forEach(i => writeTx.objectStore('items').put({ ...i, is_synced: true, isSynced: true }));
+        INITIAL_PARTIES.forEach(p => writeTx.objectStore('parties').put({ ...p, is_synced: true, isSynced: true }));
+        INITIAL_INVOICES.forEach(inv => writeTx.objectStore('invoices').put({ ...inv, is_synced: true, isSynced: true }));
+        INITIAL_PAYMENTS.forEach(pay => writeTx.objectStore('payments').put({ ...pay, is_synced: true, isSynced: true }));
+        INITIAL_EXPENSES.forEach(e => writeTx.objectStore('expenses').put({ ...e, is_synced: true, isSynced: true }));
         writeTx.objectStore('company').put({ id: 'primary', ...DEFAULT_COMPANY });
 
         writeTx.oncomplete = () => resolve();
@@ -162,7 +187,7 @@ export async function clearStore(storeName: string): Promise<void> {
 
 /**
  * Creates an invoice, decrements stock in real-time, updates customer balance,
- * and pushes to sync queue if offline.
+ * marks record with is_synced: false, and registers into offline sync_queue.
  */
 export async function createInvoiceTransaction(invoice: Invoice, isOnline: boolean = true): Promise<Invoice> {
   const db = await getDB();
@@ -174,8 +199,11 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
     const partyStore = tx.objectStore('parties');
     const queueStore = tx.objectStore('sync_queue');
 
-    // 1. Save invoice
-    invoice.isSynced = isOnline;
+    // 1. Mark with offline-first sync flags
+    (invoice as any).is_synced = false;
+    (invoice as any).isSynced = false;
+    (invoice as any).sync_action = 'INSERT';
+    invoice.updatedAt = new Date().toISOString();
     invStore.put(invoice);
 
     // 2. Adjust inventory stock
@@ -195,6 +223,9 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
             item.currentStock += line.quantity;
           }
           item.updatedAt = new Date().toISOString();
+          (item as any).is_synced = false;
+          (item as any).isSynced = false;
+          (item as any).sync_action = 'UPDATE';
           itemStore.put(item);
         }
       };
@@ -207,45 +238,42 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
         const party = partyReq.result as Party;
         if (party) {
           if (isSales && invoice.balanceAmount > 0) {
-            // Customer owes us more (Receivable increase)
             party.currentBalance += invoice.balanceAmount;
           } else if (isPurchase && invoice.balanceAmount > 0) {
-            // We owe supplier more (Payable increase -> negative balance)
             party.currentBalance -= invoice.balanceAmount;
           } else if (isCreditNote) {
-            // Sales return: Customer owes us less (decrease receivable)
             party.currentBalance = Math.max(0, party.currentBalance - invoice.grandTotal);
           } else if (isDebitNote) {
-            // Purchase return: We owe supplier less (decrease payable)
             party.currentBalance += invoice.grandTotal;
           }
           party.updatedAt = new Date().toISOString();
+          (party as any).is_synced = false;
+          (party as any).isSynced = false;
+          (party as any).sync_action = 'UPDATE';
           partyStore.put(party);
         }
       };
     }
 
-    // 4. If offline, register in sync_queue, if online push to Cloud SQL backend
-    if (!isOnline) {
-      const queueItem: SyncQueueItem = {
-        id: 'sync-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
-        entity: 'INVOICE',
-        action: 'CREATE',
-        payload: invoice,
-        timestamp: Date.now(),
-        attempts: 0,
-      };
-      queueStore.put(queueItem);
-    }
+    // 4. Register in sync_queue
+    const queueItem: SyncQueueItem = {
+      id: 'sync-inv-' + invoice.id,
+      entity: invoice.documentType === 'PURCHASE_BILL' ? 'PURCHASE' : 'INVOICE',
+      action: 'INSERT',
+      payload: invoice,
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'INSERT',
+    };
+    queueStore.put(queueItem);
 
     tx.oncomplete = () => {
-      if (isOnline) {
-        // Send async push to Cloud SQL PostgreSQL
-        fetch('/api/sync/push', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ invoices: [invoice] }),
-        }).catch(err => console.warn('Background Cloud SQL sync error:', err));
+      // Trigger background sync to Supabase if online
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        import('../services/supabaseService')
+          .then(({ pushPendingToSupabase }) => pushPendingToSupabase())
+          .catch(() => {});
       }
       resolve(invoice);
     };
@@ -262,100 +290,220 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
 export async function recordPaymentTransaction(payment: PaymentTransaction): Promise<void> {
   const db = await getDB();
   return new Promise((resolve, reject) => {
-    const tx = db.transaction(['payments', 'parties'], 'readwrite');
+    const tx = db.transaction(['payments', 'parties', 'sync_queue'], 'readwrite');
     const payStore = tx.objectStore('payments');
     const partyStore = tx.objectStore('parties');
+    const queueStore = tx.objectStore('sync_queue');
 
+    // Mark sync flags
+    (payment as any).is_synced = false;
+    (payment as any).isSynced = false;
+    (payment as any).sync_action = 'INSERT';
     payStore.put(payment);
 
+    // Update Party Balance
     const partyReq = partyStore.get(payment.partyId);
     partyReq.onsuccess = () => {
       const party = partyReq.result as Party;
       if (party) {
         if (payment.type === 'PAYMENT_IN') {
-          // Customer paid us -> reduce receivable
           party.currentBalance -= payment.amount;
         } else {
-          // We paid supplier -> reduce payable
           party.currentBalance += payment.amount;
         }
         party.updatedAt = new Date().toISOString();
+        (party as any).is_synced = false;
+        (party as any).isSynced = false;
+        (party as any).sync_action = 'UPDATE';
         partyStore.put(party);
-
-        // Async sync payment and party balance to Cloud SQL
-        fetch('/api/sync/push', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ payments: [payment], parties: [party] }),
-        }).catch(err => console.warn('Background payment sync error:', err));
       }
     };
 
-    tx.oncomplete = () => resolve();
+    // Add to sync queue
+    const queueItem: SyncQueueItem = {
+      id: 'sync-pay-' + payment.id,
+      entity: 'PAYMENT',
+      action: 'INSERT',
+      payload: payment,
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'INSERT',
+    };
+    queueStore.put(queueItem);
+
+    tx.oncomplete = () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        import('../services/supabaseService')
+          .then(({ pushPendingToSupabase }) => pushPendingToSupabase())
+          .catch(() => {});
+      }
+      resolve();
+    };
     tx.onerror = () => reject(tx.error);
   });
 }
 
 /**
- * Get sync queue items count
+ * Saves or updates an item with offline sync flags
  */
-export async function getPendingSyncCount(): Promise<number> {
-  const items = await getAllFromStore<SyncQueueItem>('sync_queue');
-  return items.length;
+export async function saveItemTransaction(item: Item): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['items', 'sync_queue'], 'readwrite');
+    const itemStore = tx.objectStore('items');
+    const queueStore = tx.objectStore('sync_queue');
+
+    (item as any).is_synced = false;
+    (item as any).isSynced = false;
+    (item as any).sync_action = 'UPDATE';
+    item.updatedAt = new Date().toISOString();
+    itemStore.put(item);
+
+    const queueItem: SyncQueueItem = {
+      id: 'sync-item-' + item.id,
+      entity: 'ITEM',
+      action: 'UPDATE',
+      payload: item,
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'UPDATE',
+    };
+    queueStore.put(queueItem);
+
+    tx.oncomplete = () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        import('../services/supabaseService')
+          .then(({ pushPendingToSupabase }) => pushPendingToSupabase())
+          .catch(() => {});
+      }
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
 }
 
 /**
- * Background cloud synchronization with Cloud SQL PostgreSQL
+ * Saves or updates a party with offline sync flags
  */
-export async function processSyncQueue(): Promise<{ syncedCount: number }> {
+export async function savePartyTransaction(party: Party): Promise<void> {
   const db = await getDB();
-  const queue = await getAllFromStore<SyncQueueItem>('sync_queue');
-  if (queue.length === 0) return { syncedCount: 0 };
-
-  const pendingInvoices: Invoice[] = [];
-  for (const item of queue) {
-    if (item.entity === 'INVOICE') {
-      pendingInvoices.push(item.payload);
-    }
-  }
-
-  // Push to Cloud SQL
-  try {
-    if (pendingInvoices.length > 0) {
-      await fetch('/api/sync/push', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ invoices: pendingInvoices }),
-      });
-    }
-  } catch (err) {
-    console.warn('Sync push to Cloud SQL failed, will retry later', err);
-  }
-
-  return new Promise((resolve) => {
-    const tx = db.transaction(['sync_queue', 'invoices'], 'readwrite');
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['parties', 'sync_queue'], 'readwrite');
+    const partyStore = tx.objectStore('parties');
     const queueStore = tx.objectStore('sync_queue');
-    const invStore = tx.objectStore('invoices');
 
-    for (const item of queue) {
-      if (item.entity === 'INVOICE') {
-        const invReq = invStore.get(item.payload.id);
-        invReq.onsuccess = () => {
-          const inv = invReq.result as Invoice;
-          if (inv) {
-            inv.isSynced = true;
-            invStore.put(inv);
-          }
-        };
-      }
-      queueStore.delete(item.id);
-    }
+    (party as any).is_synced = false;
+    (party as any).isSynced = false;
+    (party as any).sync_action = 'UPDATE';
+    party.updatedAt = new Date().toISOString();
+    partyStore.put(party);
+
+    const queueItem: SyncQueueItem = {
+      id: 'sync-party-' + party.id,
+      entity: 'PARTY',
+      action: 'UPDATE',
+      payload: party,
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'UPDATE',
+    };
+    queueStore.put(queueItem);
 
     tx.oncomplete = () => {
-      resolve({ syncedCount: queue.length });
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        import('../services/supabaseService')
+          .then(({ pushPendingToSupabase }) => pushPendingToSupabase())
+          .catch(() => {});
+      }
+      resolve();
     };
-    tx.onerror = () => {
-      resolve({ syncedCount: 0 });
-    };
+    tx.onerror = () => reject(tx.error);
   });
+}
+
+/**
+ * Saves or updates an expense with offline sync flags
+ */
+export async function saveExpenseTransaction(expense: Expense): Promise<void> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['expenses', 'sync_queue'], 'readwrite');
+    const expStore = tx.objectStore('expenses');
+    const queueStore = tx.objectStore('sync_queue');
+
+    (expense as any).is_synced = false;
+    (expense as any).isSynced = false;
+    (expense as any).sync_action = 'INSERT';
+    expense.createdAt = expense.createdAt || new Date().toISOString();
+    expStore.put(expense);
+
+    const queueItem: SyncQueueItem = {
+      id: 'sync-exp-' + expense.id,
+      entity: 'EXPENSE',
+      action: 'INSERT',
+      payload: expense,
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'INSERT',
+    };
+    queueStore.put(queueItem);
+
+    tx.oncomplete = () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        import('../services/supabaseService')
+          .then(({ pushPendingToSupabase }) => pushPendingToSupabase())
+          .catch(() => {});
+      }
+      resolve();
+    };
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Get accurate count of all unsynced items in IndexedDB
+ */
+export async function getPendingSyncCount(): Promise<number> {
+  try {
+    const queueItems = await getAllFromStore<SyncQueueItem>('sync_queue');
+    if (queueItems.length > 0) return queueItems.length;
+
+    // Check stores directly for any unflagged records
+    const [invoices, expenses, payments, items, parties] = await Promise.all([
+      getAllFromStore<any>('invoices'),
+      getAllFromStore<any>('expenses'),
+      getAllFromStore<any>('payments'),
+      getAllFromStore<any>('items'),
+      getAllFromStore<any>('parties'),
+    ]);
+
+    const unsyncedCount = 
+      invoices.filter(i => i.is_synced === false || i.isSynced === false).length +
+      expenses.filter(e => e.is_synced === false || e.isSynced === false).length +
+      payments.filter(p => p.is_synced === false || p.isSynced === false).length +
+      items.filter(it => it.is_synced === false || it.isSynced === false).length +
+      parties.filter(pa => pa.is_synced === false || pa.isSynced === false).length;
+
+    return unsyncedCount;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Background cloud synchronization via Supabase Client
+ */
+export async function processSyncQueue(): Promise<{ syncedCount: number }> {
+  try {
+    const { performFullTwoWaySync } = await import('../services/supabaseService');
+    const res = await performFullTwoWaySync();
+    return { syncedCount: res.pushedCount + res.pulledCount };
+  } catch (err) {
+    console.warn('Sync push to Supabase failed, will retry on network reconnect:', err);
+    return { syncedCount: 0 };
+  }
 }
