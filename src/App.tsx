@@ -410,9 +410,15 @@ export default function App() {
         {activeTab === 'PARTIES' && (
           <PartiesLedger
             parties={parties}
+            invoices={invoices}
+            payments={payments}
             company={company}
             onSaveParty={handleSaveParty}
             onRecordPayment={handleRecordPayment}
+            onViewInvoice={(inv, fmt) => {
+              setViewingInvoice(inv);
+              setViewingFormat(fmt);
+            }}
           />
         )}
 

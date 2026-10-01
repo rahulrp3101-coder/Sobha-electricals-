@@ -48,6 +48,7 @@ export interface Party {
   address: string;
   creditLimit: number;
   currentBalance: number; // positive = they owe us (Receivable), negative = we owe them (Payable)
+  openingBalance?: number;
   createdAt: string;
   updatedAt: string;
 }

@@ -104,6 +104,88 @@ export function generateWhatsAppKhataReminderURL(party: Party, company: CompanyP
 }
 
 /**
+ * Generates WhatsApp Customer Statement / Running Ledger Share URL
+ */
+export function generateWhatsAppCustomerLedgerURL(
+  party: Party,
+  company: CompanyProfile,
+  summary: {
+    totalPurchases: number;
+    totalPaid: number;
+    netBalance: number;
+    entries: {
+      date: string;
+      title: string;
+      debit?: number;
+      credit?: number;
+      balance: number;
+      itemsSummary?: string;
+    }[];
+  }
+): string {
+  const upiLink = company.upiId && summary.netBalance > 0
+    ? buildUPILink(company.upiId, company.name, summary.netBalance, `Khata Settlement`)
+    : '';
+
+  const lines: string[] = [
+    `*📊 CUSTOMER ACCOUNT STATEMENT (खाता विवरण)*`,
+    `🏪 *${company.name}*`,
+    `👤 Customer: *${party.name}*`,
+    party.phone ? `📱 Mobile: ${party.phone}` : '',
+    `📅 Statement Date: ${new Date().toLocaleDateString('en-IN')}`,
+    `--------------------------------`,
+    `*📈 KHATA SUMMARY (खाता सारांश):*`,
+    `• Total Purchases (कुल बिक्री): *${formatINR(summary.totalPurchases)}*`,
+    `• Total Paid (कुल जमा राशि): *${formatINR(summary.totalPaid)}*`,
+    `• *Net Balance Due (अंतिम बकाया): ${formatINR(summary.netBalance)}*`,
+    `--------------------------------`,
+    `*📋 DATE-WISE STATEMENT (तारीखवार हिसाब):*`,
+  ];
+
+  // Include up to last 15 recent entries for WhatsApp message readability
+  const recentEntries = summary.entries.slice(-15);
+  recentEntries.forEach((entry, idx) => {
+    lines.push(
+      `${idx + 1}. *${entry.date}* - ${entry.title}`
+    );
+    const parts = [];
+    if (entry.debit && entry.debit > 0) parts.push(`Bill: ${formatINR(entry.debit)}`);
+    if (entry.credit && entry.credit > 0) parts.push(`Paid: ${formatINR(entry.credit)}`);
+    parts.push(`Bal: ${formatINR(entry.balance)}`);
+    lines.push(`   ${parts.join(' | ')}`);
+    if (entry.itemsSummary) {
+      lines.push(`   📦 ${entry.itemsSummary}`);
+    }
+  });
+
+  if (summary.entries.length > 15) {
+    lines.push(`(...and ${summary.entries.length - 15} earlier transactions recorded in system)`);
+  }
+
+  if (summary.netBalance > 0 && company.upiId) {
+    lines.push(
+      `--------------------------------`,
+      `💳 *Click to Settle Dues via UPI:*`,
+      upiLink,
+      `UPI ID: *${company.upiId}*`,
+      company.bankName ? `Bank: ${company.bankName} | A/C: ${company.bankAccountNo}` : ''
+    );
+  }
+
+  lines.push(
+    `--------------------------------`,
+    `For any query, contact *${company.phone || company.name}*.`,
+    `Thank you for your business! 🙏`
+  );
+
+  const cleanPhone = (party.phone || '').replace(/\D/g, '');
+  const phoneParam = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
+  const encodedText = encodeURIComponent(lines.filter(Boolean).join('\n'));
+
+  return phoneParam ? `https://api.whatsapp.com/send?phone=${phoneParam}&text=${encodedText}` : `https://api.whatsapp.com/send?text=${encodedText}`;
+}
+
+/**
  * Generates Email Bill link
  */
 export function generateEmailInvoiceMailto(invoice: Invoice, company: CompanyProfile): string {

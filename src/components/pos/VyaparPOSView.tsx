@@ -136,6 +136,11 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
   const [isUpiQrModalOpen, setIsUpiQrModalOpen] = useState<boolean>(false);
   const [inlineUpiQrUrl, setInlineUpiQrUrl] = useState<string>('');
 
+  // Partial Payment State for Credit / Udhar Billing (Requirement 1)
+  const [creditPaidAmount, setCreditPaidAmount] = useState<number>(0);
+  const [creditPaymentMethod, setCreditPaymentMethod] = useState<'CASH' | 'UPI'>('CASH');
+  const [creditUpiQrUrl, setCreditUpiQrUrl] = useState<string>('');
+
   const handleOpenQuickAddForm = (initialName: string = '', initialBarcode: string = '') => {
     setQuickItemName(initialName);
     setQuickItemCategory('General Goods (सामान्य वस्तुएं)');
@@ -306,16 +311,18 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
   // Invoice calculations
   const totals = calculateInvoiceTotals(cartLines);
 
-  // Sync received amount based on payment mode
+  // Sync received amount based on payment mode & partial payment
   useEffect(() => {
     if (paymentMode === 'CREDIT') {
-      setReceivedAmount(0);
+      const sanitized = Math.min(totals.grandTotal, Math.max(0, Number(creditPaidAmount) || 0));
+      setReceivedAmount(sanitized);
     } else {
       setReceivedAmount(totals.grandTotal);
+      setCreditPaidAmount(0);
     }
-  }, [totals.grandTotal, paymentMode]);
+  }, [totals.grandTotal, paymentMode, creditPaidAmount]);
 
-  // Generate Dynamic UPI QR Code with exact bill amount and shop UPI ID
+  // Generate Dynamic UPI QR Code with exact bill amount or partial amount
   useEffect(() => {
     if (paymentMode === 'UPI' && totals.grandTotal > 0) {
       generateUpiQrDataUrl(
@@ -327,8 +334,18 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       )
         .then(url => setInlineUpiQrUrl(url))
         .catch(err => console.error('Failed to generate inline UPI QR:', err));
+    } else if (paymentMode === 'CREDIT' && creditPaymentMethod === 'UPI' && creditPaidAmount > 0) {
+      generateUpiQrDataUrl(
+        company.upiId || 'merchant@upi',
+        company.name || 'Merchant Store',
+        creditPaidAmount,
+        'PARTIAL_BILL',
+        220
+      )
+        .then(url => setCreditUpiQrUrl(url))
+        .catch(err => console.error('Failed to generate partial UPI QR:', err));
     }
-  }, [paymentMode, totals.grandTotal, company.upiId, company.name]);
+  }, [paymentMode, totals.grandTotal, creditPaymentMethod, creditPaidAmount, company.upiId, company.name]);
 
   const handleSelectPaymentMode = (mode: PaymentMode) => {
     setPaymentMode(mode);
@@ -348,6 +365,8 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
     setItemQuantity(1);
     setItemDiscountPercent(0);
     setPaymentMode('CASH');
+    setCreditPaidAmount(0);
+    setCreditPaymentMethod('CASH');
     setInvoiceNotes('');
     setIsCreatingInvoice(true);
   };
@@ -370,8 +389,18 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       const now = new Date();
       const invoiceNumber = `${company.invoicePrefix || 'INV-'}${now.getFullYear()}-${String(Date.now()).slice(-5)}`;
       const isUdhar = paymentMode === 'CREDIT';
-      const actualReceived = isUdhar ? 0 : receivedAmount;
+      const actualReceived = isUdhar 
+        ? Math.min(totals.grandTotal, Math.max(0, Number(creditPaidAmount) || 0))
+        : receivedAmount;
       const balanceDue = Math.max(0, totals.grandTotal - actualReceived);
+      const invoiceStatus: 'PAID' | 'PARTIAL' | 'UNPAID' = 
+        balanceDue === 0 ? 'PAID' : (actualReceived > 0 ? 'PARTIAL' : 'UNPAID');
+
+      let finalNotes = invoiceNotes.trim();
+      if (isUdhar && actualReceived > 0) {
+        const partialNote = `Partial Paid: ${formatINR(actualReceived)} (${creditPaymentMethod}), Udhar: ${formatINR(balanceDue)}`;
+        finalNotes = finalNotes ? `${finalNotes} | ${partialNote}` : partialNote;
+      }
 
       const invoice: Invoice = {
         id: `inv-${Date.now()}`,
@@ -397,12 +426,12 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         grandTotal: totals.grandTotal,
         receivedAmount: actualReceived,
         balanceAmount: balanceDue,
-        paymentMode,
-        status: actualReceived >= totals.grandTotal ? 'PAID' : actualReceived > 0 ? 'PARTIAL' : 'UNPAID',
-        notes: invoiceNotes || undefined,
+        paymentMode: isUdhar && actualReceived > 0 ? 'SPLIT' : paymentMode,
+        status: invoiceStatus,
+        notes: finalNotes || undefined,
+        isSynced: true,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
-        isSynced: false,
       };
 
       const saved = await onSaveInvoice(invoice, false);
@@ -1438,19 +1467,161 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               </div>
             )}
 
-            {/* Udhar / Khata Notice */}
+            {/* Udhar / Khata & Partial Payment (Requirement 1) */}
             {paymentMode === 'CREDIT' && (
-              <div className="p-3 bg-amber-50 border border-amber-300 rounded-2xl text-xs text-amber-950 space-y-1">
-                <div className="flex items-center gap-1.5 font-bold">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>Credit Sale (उधार बिल):</span>
+              <div className="p-4 bg-amber-50/90 border-2 border-amber-300 rounded-2xl text-xs text-amber-950 space-y-3 shadow-2xs">
+                <div className="flex items-center justify-between border-b border-amber-200/80 pb-2">
+                  <div className="flex items-center gap-1.5 font-black text-amber-950">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Credit &amp; Partial Payment (उधार व आंशिक भुगतान)</span>
+                  </div>
+                  <span className="text-[10px] font-bold bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full">
+                    Split Billing
+                  </span>
                 </div>
-                <p className="text-[11px] leading-relaxed">
-                  This bill of <strong className="font-mono text-amber-900">{formatINR(totals.grandTotal)}</strong> will be added to <strong>{selectedParty?.name || 'Customer'}</strong>&apos;s pending khata.
-                </p>
+
+                {/* 2 Clear Input Fields (Requirement 1) */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {/* Paid Amount Field */}
+                  <div className="bg-white p-2.5 rounded-xl border border-amber-200 space-y-1">
+                    <label className="block text-[11px] font-bold text-slate-700">
+                      Paid Amount (जमा राशि):
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-2.5 top-2 font-mono font-bold text-slate-400">₹</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max={totals.grandTotal}
+                        value={creditPaidAmount === 0 ? '' : creditPaidAmount}
+                        placeholder="0.00"
+                        onChange={(e) => {
+                          const val = Number(e.target.value);
+                          setCreditPaidAmount(Math.min(totals.grandTotal, Math.max(0, isNaN(val) ? 0 : val)));
+                        }}
+                        className="w-full pl-7 pr-2 py-1.5 bg-slate-50 border border-slate-300 rounded-lg text-sm font-mono font-black text-emerald-700 focus:bg-white focus:outline-none focus:border-emerald-600"
+                      />
+                    </div>
+                    {/* Quick percentage shortcuts */}
+                    <div className="flex items-center gap-1 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setCreditPaidAmount(0)}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-semibold"
+                      >
+                        ₹0 (पूरी उधारी)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreditPaidAmount(Math.round(totals.grandTotal * 0.25))}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-semibold"
+                      >
+                        25%
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCreditPaidAmount(Math.round(totals.grandTotal * 0.50))}
+                        className="text-[10px] px-1.5 py-0.5 bg-slate-100 hover:bg-slate-200 rounded text-slate-700 font-semibold"
+                      >
+                        50%
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Balance Amount Auto-Calculated Display */}
+                  <div className="bg-amber-100/70 p-2.5 rounded-xl border border-amber-300 flex flex-col justify-between">
+                    <label className="block text-[11px] font-bold text-amber-900">
+                      Balance Amount (बाकी उधारी):
+                    </label>
+                    <div className="font-mono font-black text-lg text-amber-950 mt-1">
+                      {formatINR(Math.max(0, totals.grandTotal - (Number(creditPaidAmount) || 0)))}
+                    </div>
+                    <div className="text-[10px] text-amber-800 font-semibold mt-0.5">
+                      यह शेष राशि ग्राहक के खाते में जुड़ेगी
+                    </div>
+                  </div>
+                </div>
+
+                {/* If Paid Amount > 0, select payment mode for partial amount */}
+                {creditPaidAmount > 0 && (
+                  <div className="bg-white p-2.5 rounded-xl border border-amber-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-[11px] font-bold text-slate-700">
+                        Payment Mode for Paid Amount (जमा राशि का माध्यम):
+                      </span>
+                      <span className="font-mono font-extrabold text-xs text-emerald-700">
+                        {formatINR(creditPaidAmount)}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCreditPaymentMethod('CASH')}
+                        className={`py-1.5 px-3 rounded-lg text-xs font-bold transition text-center border ${
+                          creditPaymentMethod === 'CASH'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-2xs'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        💵 Cash (नकद)
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setCreditPaymentMethod('UPI')}
+                        className={`py-1.5 px-3 rounded-lg text-xs font-bold transition text-center border ${
+                          creditPaymentMethod === 'UPI'
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                            : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        📱 UPI / QR (यूपीआई)
+                      </button>
+                    </div>
+
+                    {/* Partial UPI QR Preview */}
+                    {creditPaymentMethod === 'UPI' && (
+                      <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-xl flex items-center gap-3">
+                        {creditUpiQrUrl ? (
+                          <div
+                            onClick={() => setIsUpiQrModalOpen(true)}
+                            className="w-16 h-16 bg-white p-1 rounded-lg border border-blue-300 shadow-2xs shrink-0 cursor-pointer hover:border-blue-500 transition"
+                            title="Click to enlarge"
+                          >
+                            <img src={creditUpiQrUrl} alt="UPI QR" className="w-full h-full object-contain" />
+                          </div>
+                        ) : (
+                          <div className="w-16 h-16 bg-white rounded-lg border border-blue-200 flex items-center justify-center shrink-0">
+                            <QrCode className="w-6 h-6 text-blue-400 animate-pulse" />
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="text-[11px] text-slate-700">
+                            Scan &amp; Pay Partial: <strong className="font-mono text-blue-800">{formatINR(creditPaidAmount)}</strong>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setIsUpiQrModalOpen(true)}
+                            className="px-2 py-0.5 bg-blue-600 text-white rounded text-[10px] font-bold"
+                          >
+                            🔍 Enlarge QR (बड़ा QR)
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Khata Impact Summary */}
                 {selectedParty && (
-                  <div className="text-[11px] font-bold pt-1 border-t border-amber-200">
-                    New Total Due: <span className="font-mono text-amber-900">{formatINR(customerPreviousBalance + totals.grandTotal)}</span>
+                  <div className="text-[11px] pt-1 border-t border-amber-200 flex items-center justify-between font-semibold">
+                    <span className="text-amber-800">
+                      Customer Previous Due: <strong className="font-mono">{formatINR(customerPreviousBalance)}</strong>
+                    </span>
+                    <span className="text-amber-950 font-bold">
+                      New Total Due: <strong className="font-mono text-amber-900">{formatINR(customerPreviousBalance + Math.max(0, totals.grandTotal - (Number(creditPaidAmount) || 0)))}</strong>
+                    </span>
                   </div>
                 )}
               </div>
@@ -1488,8 +1659,12 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         onClose={() => setIsUpiQrModalOpen(false)}
         upiId={company.upiId}
         shopName={company.name}
-        amount={totals.grandTotal}
-        invoiceNumber="New Bill"
+        amount={
+          paymentMode === 'CREDIT' && creditPaidAmount > 0 
+            ? creditPaidAmount 
+            : totals.grandTotal
+        }
+        invoiceNumber="ACTIVE BILL"
         onConfirmPaid={() => {
           showFlashToast('UPI payment marked as received!');
         }}
