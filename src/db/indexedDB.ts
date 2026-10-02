@@ -482,6 +482,244 @@ export async function saveExpenseTransaction(expense: Expense): Promise<void> {
 }
 
 /**
+ * Deletes an invoice with full rollback:
+ * - Restores product quantities back to stock in inventory.
+ * - Reverses customer/supplier balance effect.
+ * - Deletes the invoice record from local IndexedDB and syncs deletion to Supabase.
+ */
+export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ success: boolean; invoiceNumber?: string }> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['invoices', 'items', 'parties', 'sync_queue'], 'readwrite');
+    const invStore = tx.objectStore('invoices');
+    const itemStore = tx.objectStore('items');
+    const partyStore = tx.objectStore('parties');
+    const queueStore = tx.objectStore('sync_queue');
+
+    const invReq = invStore.get(invoiceId);
+
+    invReq.onsuccess = () => {
+      const invoice = invReq.result as Invoice;
+      if (!invoice) {
+        resolve({ success: false });
+        return;
+      }
+
+      const isSales = invoice.documentType === 'SALES_INVOICE' || invoice.documentType === 'DELIVERY_CHALLAN' || !invoice.documentType;
+      const isPurchase = invoice.documentType === 'PURCHASE_BILL';
+      const isCreditNote = invoice.documentType === 'CREDIT_NOTE';
+      const isDebitNote = invoice.documentType === 'DEBIT_NOTE';
+
+      // 1. Rollback Stock
+      if (invoice.items && Array.isArray(invoice.items)) {
+        for (const line of invoice.items) {
+          const itemReq = itemStore.get(line.itemId);
+          itemReq.onsuccess = () => {
+            const item = itemReq.result as Item;
+            if (item) {
+              if (isSales || isDebitNote) {
+                // Stock was decremented on sale, so increment it back
+                item.currentStock += line.quantity;
+              } else if (isPurchase || isCreditNote) {
+                // Stock was incremented on purchase, so decrement it back
+                item.currentStock = Math.max(0, item.currentStock - line.quantity);
+              }
+              item.updatedAt = new Date().toISOString();
+              (item as any).is_synced = false;
+              (item as any).isSynced = false;
+              (item as any).sync_action = 'UPDATE';
+              itemStore.put(item);
+            }
+          };
+        }
+      }
+
+      // 2. Rollback Party Khata Balance
+      if (invoice.partyId) {
+        const partyReq = partyStore.get(invoice.partyId);
+        partyReq.onsuccess = () => {
+          const party = partyReq.result as Party;
+          if (party) {
+            if (isSales && invoice.balanceAmount > 0) {
+              // Unpaid balance was added to customer, so subtract it back
+              party.currentBalance = Math.max(0, party.currentBalance - invoice.balanceAmount);
+            } else if (isPurchase && invoice.balanceAmount > 0) {
+              // Unpaid purchase balance was deducted from supplier, so add it back
+              party.currentBalance += invoice.balanceAmount;
+            } else if (isCreditNote) {
+              party.currentBalance += invoice.grandTotal;
+            } else if (isDebitNote) {
+              party.currentBalance = Math.max(0, party.currentBalance - invoice.grandTotal);
+            }
+            party.updatedAt = new Date().toISOString();
+            (party as any).is_synced = false;
+            (party as any).isSynced = false;
+            (party as any).sync_action = 'UPDATE';
+            partyStore.put(party);
+          }
+        };
+      }
+
+      // 3. Delete invoice from store
+      invStore.delete(invoiceId);
+
+      // 4. Register delete in sync_queue
+      queueStore.put({
+        id: 'sync-del-inv-' + invoiceId,
+        entity: isPurchase ? 'PURCHASE' : 'INVOICE',
+        action: 'DELETE',
+        payload: { id: invoiceId },
+        timestamp: Date.now(),
+        attempts: 0,
+        is_synced: false,
+        sync_action: 'DELETE',
+      });
+
+      tx.oncomplete = () => {
+        // Direct mutation sync to Supabase
+        import('../services/supabaseService')
+          .then(({ syncMutation, pushPendingToSupabase }) => {
+            syncMutation(isPurchase ? 'purchases' : 'invoices', { id: invoiceId }, 'DELETE').catch(() => {});
+            pushPendingToSupabase().catch(() => {});
+          })
+          .catch(() => {});
+        resolve({ success: true, invoiceNumber: invoice.invoiceNumber });
+      };
+    };
+
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Deletes an item from local IndexedDB and registers deletion to Supabase
+ */
+export async function deleteItemTransaction(itemId: string): Promise<boolean> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['items', 'sync_queue'], 'readwrite');
+    const itemStore = tx.objectStore('items');
+    const queueStore = tx.objectStore('sync_queue');
+
+    itemStore.delete(itemId);
+
+    queueStore.put({
+      id: 'sync-del-itm-' + itemId,
+      entity: 'ITEM',
+      action: 'DELETE',
+      payload: { id: itemId },
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'DELETE',
+    });
+
+    tx.oncomplete = () => {
+      import('../services/supabaseService')
+        .then(({ syncMutation }) => {
+          syncMutation('items', { id: itemId }, 'DELETE').catch(() => {});
+        })
+        .catch(() => {});
+      resolve(true);
+    };
+
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Deletes a party from local IndexedDB and registers deletion to Supabase
+ */
+export async function deletePartyTransaction(partyId: string): Promise<boolean> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['parties', 'sync_queue'], 'readwrite');
+    const partyStore = tx.objectStore('parties');
+    const queueStore = tx.objectStore('sync_queue');
+
+    partyStore.delete(partyId);
+
+    queueStore.put({
+      id: 'sync-del-pty-' + partyId,
+      entity: 'PARTY',
+      action: 'DELETE',
+      payload: { id: partyId },
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'DELETE',
+    });
+
+    tx.oncomplete = () => {
+      import('../services/supabaseService')
+        .then(({ syncMutation }) => {
+          syncMutation('parties', { id: partyId }, 'DELETE').catch(() => {});
+        })
+        .catch(() => {});
+      resolve(true);
+    };
+
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Toggles party blacklist / inactive state and syncs to Supabase
+ */
+export async function togglePartyBlacklistTransaction(
+  partyId: string, 
+  isBlacklisted: boolean, 
+  reason?: string
+): Promise<Party | null> {
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['parties', 'sync_queue'], 'readwrite');
+    const partyStore = tx.objectStore('parties');
+    const queueStore = tx.objectStore('sync_queue');
+
+    const req = partyStore.get(partyId);
+    req.onsuccess = () => {
+      const party = req.result as Party;
+      if (!party) {
+        resolve(null);
+        return;
+      }
+
+      party.isBlacklisted = isBlacklisted;
+      party.blacklistReason = reason || (isBlacklisted ? 'Blacklisted by Admin (लेन-देन बंद)' : undefined);
+      party.updatedAt = new Date().toISOString();
+      (party as any).is_synced = false;
+      (party as any).isSynced = false;
+      (party as any).sync_action = 'UPDATE';
+
+      partyStore.put(party);
+
+      queueStore.put({
+        id: 'sync-pty-' + partyId,
+        entity: 'PARTY',
+        action: 'UPDATE',
+        payload: party,
+        timestamp: Date.now(),
+        attempts: 0,
+        is_synced: false,
+        sync_action: 'UPDATE',
+      });
+
+      tx.oncomplete = () => {
+        import('../services/supabaseService')
+          .then(({ syncMutation }) => {
+            syncMutation('parties', party).catch(() => {});
+          })
+          .catch(() => {});
+        resolve(party);
+      };
+    };
+
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
  * Get accurate count of all unsynced items in IndexedDB
  */
 export async function getPendingSyncCount(): Promise<number> {

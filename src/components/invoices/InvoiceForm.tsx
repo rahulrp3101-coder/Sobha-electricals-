@@ -184,7 +184,7 @@ export const InvoiceForm: React.FC<InvoiceFormProps> = ({
               }}
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-1.5 font-semibold text-xs focus:outline-none focus:border-blue-600"
             >
-              {parties.map((p) => (
+              {parties.filter(p => !p.isBlacklisted || p.id === selectedParty?.id).map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name} ({p.state})
                 </option>

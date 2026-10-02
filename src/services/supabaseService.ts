@@ -270,12 +270,13 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
 
   try {
     // 1. Fetch stores in parallel
-    const [items, parties, invoices, payments, expenses] = await Promise.all([
+    const [items, parties, invoices, payments, expenses, queueItems] = await Promise.all([
       getAllFromStore<Item>('items'),
       getAllFromStore<Party>('parties'),
       getAllFromStore<Invoice>('invoices'),
       getAllFromStore<PaymentTransaction>('payments'),
       getAllFromStore<Expense>('expenses'),
+      getAllFromStore<SyncQueueItem>('sync_queue').catch(() => []),
     ]);
 
     // 2. Incremental Delta Filtering: Only records that are not synced yet
@@ -291,10 +292,12 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
     );
     const pendingExpenses = expenses.filter(e => (e as any).is_synced === false || (e as any).isSynced === false);
     const pendingPayments = payments.filter(p => (p as any).is_synced === false || (p as any).isSynced === false);
+    const pendingDeletes = (queueItems || []).filter(q => q.action === 'DELETE' || q.sync_action === 'DELETE');
 
     const totalPendingCount = 
       pendingItems.length + pendingParties.length + pendingInvoices.length + 
-      pendingPurchases.length + pendingExpenses.length + pendingPayments.length;
+      pendingPurchases.length + pendingExpenses.length + pendingPayments.length +
+      pendingDeletes.length;
 
     // Fast-path: If nothing has changed, finish immediately in ~1ms
     if (totalPendingCount === 0) {
@@ -382,7 +385,7 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
       updated_at: p.createdAt || new Date().toISOString(),
     }));
 
-    // 4. Parallel Bulk Upsert to Supabase via Promise.all
+    // 4. Parallel Bulk Upsert & Deletes to Supabase via Promise.all
     const uploadTasks: PromiseLike<any>[] = [];
     if (itemRows.length > 0) uploadTasks.push(client.from('items').upsert(itemRows, { onConflict: 'id' }));
     if (partyRows.length > 0) uploadTasks.push(client.from('parties').upsert(partyRows, { onConflict: 'id' }));
@@ -390,6 +393,12 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
     if (purchaseRows.length > 0) uploadTasks.push(client.from('purchases').upsert(purchaseRows, { onConflict: 'id' }));
     if (expenseRows.length > 0) uploadTasks.push(client.from('expenses').upsert(expenseRows, { onConflict: 'id' }));
     if (paymentRows.length > 0) uploadTasks.push(client.from('payments').upsert(paymentRows, { onConflict: 'id' }));
+
+    for (const dq of pendingDeletes) {
+      const table = dq.entity === 'ITEM' ? 'items' : dq.entity === 'PARTY' ? 'parties' : dq.entity === 'PURCHASE' ? 'purchases' : dq.entity === 'EXPENSE' ? 'expenses' : dq.entity === 'PAYMENT' ? 'payments' : 'invoices';
+      const targetId = dq.payload?.id || dq.id.replace(/^sync-del-(inv|itm|pty|exp|pay)-/, '');
+      uploadTasks.push(client.from(table).delete().eq('id', targetId));
+    }
 
     const uploadResults = await Promise.all(uploadTasks);
     for (const res of uploadResults) {

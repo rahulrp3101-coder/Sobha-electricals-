@@ -3,56 +3,89 @@ import { useEffect, useRef } from 'react';
 interface BarcodeScannerOptions {
   onScan: (barcode: string) => void;
   minChars?: number;
-  maxIntervalMs?: number;
+  maxIntervalMs?: number; // threshold between keystrokes in ms (typically 10-60ms for hardware scanners)
 }
 
 /**
- * Listens for hardware USB barcode scanner keyboard-emulated input.
- * USB scanners emit characters with extremely low inter-character intervals (<30ms),
- * followed by an Enter key.
+ * Global Hardware Barcode Scanner Listener:
+ * Intercepts rapid keyboard-emulated keystrokes from USB / Wireless / Bluetooth scanners
+ * ending with 'Enter', whether an input is focused or not.
  */
-export function useBarcodeScanner({ onScan, minChars = 4, maxIntervalMs = 50 }: BarcodeScannerOptions) {
+export function useBarcodeScanner({ 
+  onScan, 
+  minChars = 3, 
+  maxIntervalMs = 90 
+}: BarcodeScannerOptions) {
   const bufferRef = useRef<string>('');
   const lastKeyTimeRef = useRef<number>(0);
+  const scanStartRef = useRef<number>(0);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Don't intercept if user is intentionally typing into a regular text input or textarea
-      // unless it's the barcode scanner input or key speed indicates scanner
-      const target = e.target as HTMLElement;
-      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+      // Ignore functional modifier keys (Ctrl, Alt, Meta)
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+      if (e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
 
       const now = Date.now();
       const interval = now - lastKeyTimeRef.current;
       lastKeyTimeRef.current = now;
 
+      const target = e.target as HTMLElement | null;
+      const isInput = target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA');
+
+      // Hardware Scanner sends 'Enter' at the end of the barcode sequence
       if (e.key === 'Enter') {
-        if (bufferRef.current.length >= minChars) {
-          const scannedCode = bufferRef.current.trim();
+        const totalDuration = now - scanStartRef.current;
+        const scannedCode = bufferRef.current.trim();
+        const codeLen = scannedCode.length;
+
+        // Verify that this was an automated barcode scanner:
+        // 1. Minimum character length (typically >= 3 characters)
+        // 2. Average keystroke interval is rapid (<= maxIntervalMs or total rapid burst < 700ms)
+        const isRapidScan = codeLen >= minChars && (totalDuration / codeLen <= maxIntervalMs || totalDuration < 700);
+
+        if (isRapidScan) {
+          e.preventDefault();
+          e.stopPropagation();
+
+          // If the scanner typed into an active input, clean it up so barcode digits don't linger
+          if (isInput && target instanceof HTMLInputElement) {
+            if (target.value === scannedCode || target.value.endsWith(scannedCode) || target.value.includes(scannedCode)) {
+              target.value = target.value.replace(scannedCode, '').trim();
+              target.dispatchEvent(new Event('input', { bubbles: true }));
+              target.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+
           bufferRef.current = '';
           onScan(scannedCode);
-          if (isInput) {
-            e.preventDefault();
-          }
+          return;
         }
+
         bufferRef.current = '';
         return;
       }
 
-      // If characters come slower than maxIntervalMs, reset buffer (user is typing slowly by hand)
-      if (interval > maxIntervalMs && bufferRef.current.length > 0) {
+      // If delay between consecutive keys is too slow, user is manually typing by hand
+      if (interval > maxIntervalMs) {
+        // Start fresh scan candidate buffer
         bufferRef.current = '';
+        scanStartRef.current = now;
       }
 
-      // Only capture printable ASCII characters
-      if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
+      // Capture single printable characters
+      if (e.key.length === 1) {
+        if (bufferRef.current.length === 0) {
+          scanStartRef.current = now;
+        }
         bufferRef.current += e.key;
       }
     };
 
-    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keydown', handleKeyDown, true);
     };
   }, [onScan, minChars, maxIntervalMs]);
 }
+

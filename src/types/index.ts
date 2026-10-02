@@ -43,12 +43,17 @@ export interface Party {
   phone: string;
   email?: string;
   gstin?: string;
+  shopName?: string;
+  city?: string;
+  village?: string;
   state: string;
   stateCode: string;
   address: string;
   creditLimit: number;
   currentBalance: number; // positive = they owe us (Receivable), negative = we owe them (Payable)
   openingBalance?: number;
+  isBlacklisted?: boolean;
+  blacklistReason?: string;
   createdAt: string;
   updatedAt: string;
 }

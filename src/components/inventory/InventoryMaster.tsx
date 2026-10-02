@@ -4,7 +4,7 @@ import { formatINR } from '../../services/gstCalculator';
 import { 
   Package, Search, Plus, AlertTriangle, Clock, 
   Barcode, Check, Edit, Layers, ArrowUpDown, X, Sparkles, Filter,
-  Camera, RefreshCw
+  Camera, RefreshCw, Trash2
 } from 'lucide-react';
 import { BarcodeCameraModal } from '../pos/BarcodeCameraModal';
 import { playBarcodeBeep } from '../../services/soundEffects';
@@ -13,17 +13,21 @@ import { generateEAN13Barcode, generateRandomSKU } from '../../services/barcodeG
 interface InventoryMasterProps {
   items: Item[];
   onSaveItem: (item: Item) => Promise<void>;
+  onDeleteItem?: (itemId: string) => Promise<void>;
 }
 
 export const InventoryMaster: React.FC<InventoryMasterProps> = ({
   items,
   onSaveItem,
+  onDeleteItem,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('ALL');
   const [lowStockOnly, setLowStockOnly] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<Item | null>(null);
+  const [itemToDelete, setItemToDelete] = useState<Item | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [quickStockItemId, setQuickStockItemId] = useState<string | null>(null);
   const [quickStockQty, setQuickStockQty] = useState<number>(10);
   const [isScanningBarcodeModal, setIsScanningBarcodeModal] = useState<boolean>(false);
@@ -134,6 +138,21 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
     };
     await onSaveItem(updated);
     setQuickStockItemId(null);
+  };
+
+  const handleConfirmDeleteItem = async () => {
+    if (!itemToDelete || !onDeleteItem) return;
+    setIsDeleting(true);
+    try {
+      await onDeleteItem(itemToDelete.id);
+      showToast('सफलतापूर्वक हटा दिया गया (Deleted Successfully)');
+      setItemToDelete(null);
+    } catch (err) {
+      console.error('Failed to delete item:', err);
+      showToast('हटाने में त्रुटि हुई');
+    } finally {
+      setIsDeleting(false);
+    }
   };
 
   const categories = Array.from(new Set(items.map(i => i.category)));
@@ -364,6 +383,17 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                         >
                           <Edit className="w-4 h-4" />
                         </button>
+                        {onDeleteItem && (
+                          <button
+                            type="button"
+                            onClick={() => setItemToDelete(item)}
+                            className="flex items-center gap-1 px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer shadow-2xs"
+                            title="Delete Item (आइटम हटाएं)"
+                          >
+                            <Trash2 className="w-3.5 h-3.5 text-red-600 stroke-[2.5]" />
+                            <span>Delete</span>
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -392,12 +422,25 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                     </div>
                   </div>
 
-                  <button
-                    onClick={() => openEditModal(item)}
-                    className="p-1.5 text-slate-500 hover:text-blue-600 bg-slate-50 rounded-lg"
-                  >
-                    <Edit className="w-4 h-4" />
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => openEditModal(item)}
+                      className="p-1.5 text-slate-500 hover:text-blue-600 bg-slate-50 rounded-lg"
+                      title="Edit Item"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                    {onDeleteItem && (
+                      <button
+                        type="button"
+                        onClick={() => setItemToDelete(item)}
+                        className="p-1.5 text-red-600 hover:bg-red-100 bg-red-50 rounded-lg border border-red-200"
+                        title="Delete Item (आइटम हटाएं)"
+                      >
+                        <Trash2 className="w-4 h-4 text-red-600" />
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-3 gap-2 bg-slate-50 p-2.5 rounded-xl text-center">
@@ -725,6 +768,78 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
           setIsScanningSearchModal(false);
         }}
       />
+
+      {/* Delete Item Confirmation Modal (Requirement 2 & 4) */}
+      {itemToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-slate-900">
+            <div className="bg-red-600 text-white p-4 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold">
+                  <AlertTriangle className="w-5 h-5 text-white" />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base">🗑️ Delete Item (सामान हटाएं)</h3>
+                  <p className="text-[11px] text-red-100">IndexedDB और Supabase दोनों से स्थायी रूप से हटेगा</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setItemToDelete(null)}
+                className="p-1 rounded-lg text-red-200 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl space-y-2 text-red-900">
+                <div className="font-extrabold text-sm text-red-950 leading-snug">
+                  क्या आप वाकई आइटम '{itemToDelete.name}' को हमेशा के लिए हटाना चाहते हैं?
+                </div>
+                <p className="text-xs text-red-800 leading-relaxed">
+                  यह आइटम IndexedDB और Supabase क्लाउड डेटाबेस दोनों से हमेशा के लिए मिट जाएगा और सभी कनेक्टेड मोबाइल व लैपटॉप पर तुरंत अपडेट हो जाएगा।
+                </p>
+              </div>
+
+              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 font-medium text-slate-700">
+                <div className="flex justify-between">
+                  <span>कैटेगरी (Category):</span>
+                  <span className="font-bold text-slate-900">{itemToDelete.category}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>मौजूदा स्टॉक (Stock):</span>
+                  <span className="font-bold text-slate-900">{itemToDelete.currentStock} {itemToDelete.unit}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span>बिक्री दर (Price):</span>
+                  <span className="font-mono font-bold text-blue-700">{formatINR(itemToDelete.retailPrice)}</span>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setItemToDelete(null)}
+                  disabled={isDeleting}
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
+                >
+                  रद्द करें (Cancel)
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDeleteItem}
+                  disabled={isDeleting}
+                  className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>{isDeleting ? 'हटाया जा रहा है...' : 'हाँ, हमेशा के लिए हटाएं'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast Notification */}
       {toastMsg && (

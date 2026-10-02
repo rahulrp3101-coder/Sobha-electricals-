@@ -8,7 +8,8 @@ import {
   Users, Search, Plus, Phone, Mail, Share2, 
   ArrowDownLeft, ArrowUpRight, DollarSign, X, Check, CreditCard, AlertCircle,
   ArrowLeft, Eye, ChevronDown, ChevronUp, Printer, FileText, ShoppingBag,
-  Calendar, CheckCircle2, Building2, MapPin, QrCode, Smartphone, ExternalLink
+  Calendar, CheckCircle2, Building2, MapPin, QrCode, Smartphone, ExternalLink,
+  Trash2, AlertTriangle, Ban
 } from 'lucide-react';
 import { 
   generateWhatsAppKhataReminderURL, 
@@ -17,6 +18,7 @@ import {
 } from '../../services/whatsappShare';
 import { PaymentInModal } from './PaymentInModal';
 import { DynamicUpiQrModal } from '../pos/DynamicUpiQrModal';
+import { UniversalCustomerSearch, matchPartyOmni } from '../common/UniversalCustomerSearch';
 
 interface PartiesLedgerProps {
   parties: Party[];
@@ -28,6 +30,8 @@ interface PartiesLedgerProps {
   onViewInvoice?: (invoice: Invoice, format: 'thermal' | 'a4') => void;
   initialPartyId?: string | null;
   onClearInitialParty?: () => void;
+  onDeleteParty?: (partyId: string) => Promise<void>;
+  onToggleBlacklist?: (partyId: string, isBlacklisted: boolean) => Promise<void>;
 }
 
 interface StatementEntry {
@@ -57,10 +61,16 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
   onViewInvoice,
   initialPartyId,
   onClearInitialParty,
+  onDeleteParty,
+  onToggleBlacklist,
 }) => {
   const [partyTypeFilter, setPartyTypeFilter] = useState<'ALL' | 'CUSTOMER' | 'SUPPLIER'>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedParty, setSelectedParty] = useState<Party | null>(null);
+
+  // Party Deletion & Blacklist State (Requirement 3)
+  const [partyToDelete, setPartyToDelete] = useState<Party | null>(null);
+  const [isDeletingParty, setIsDeletingParty] = useState(false);
 
   // Sync with initialPartyId if passed from Invoices Register
   React.useEffect(() => {
@@ -116,6 +126,39 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
     setTimeout(() => setToastMessage(null), 3500);
   };
 
+  const handleConfirmDeleteParty = async () => {
+    if (!partyToDelete || !onDeleteParty) return;
+    setIsDeletingParty(true);
+    try {
+      await onDeleteParty(partyToDelete.id);
+      showToast('सफलतापूर्वक हटा दिया गया (Deleted Successfully)');
+      if (selectedParty?.id === partyToDelete.id) {
+        setSelectedParty(null);
+      }
+      setPartyToDelete(null);
+    } catch (err) {
+      console.error('Failed to delete party:', err);
+      showToast('पार्टी हटाने में त्रुटि हुई');
+    } finally {
+      setIsDeletingParty(false);
+    }
+  };
+
+  const handleToggleBlacklistParty = async (party: Party, e?: React.MouseEvent) => {
+    if (e) e.stopPropagation();
+    const newStatus = !party.isBlacklisted;
+    if (onToggleBlacklist) {
+      await onToggleBlacklist(party.id, newStatus);
+    } else {
+      await onSaveParty({ 
+        ...party, 
+        isBlacklisted: newStatus, 
+        blacklistReason: newStatus ? 'Blacklisted by Admin (लेन-देन बंद)' : undefined 
+      });
+    }
+    showToast(newStatus ? `🚫 ${party.name} को ब्लैकलिस्ट किया गया (लेन-देन बंद)` : `✅ ${party.name} को सक्रिय किया गया`);
+  };
+
   // Sync selectedParty with latest data from parties list
   const activeParty = useMemo(() => {
     if (!selectedParty) return null;
@@ -125,12 +168,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
   const filteredParties = useMemo(() => {
     return parties.filter(p => {
       const matchesType = partyTypeFilter === 'ALL' || p.type === partyTypeFilter;
-      const q = searchQuery.toLowerCase().trim();
-      const matchesSearch = 
-        !q ||
-        p.name.toLowerCase().includes(q) ||
-        p.phone.includes(q) ||
-        (p.gstin && p.gstin.toLowerCase().includes(q));
+      const matchesSearch = matchPartyOmni(p, searchQuery);
       return matchesType && matchesSearch;
     });
   }, [parties, partyTypeFilter, searchQuery]);
@@ -546,6 +584,12 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                 }`}>
                   {isSupplier ? 'Supplier / Vendor (व्यापारी/सप्लायर)' : 'Customer (ग्राहक)'}
                 </span>
+                {activeParty.isBlacklisted && (
+                  <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-red-100 text-red-800 border border-red-300 flex items-center gap-1">
+                    <Ban className="w-3 h-3 text-red-600" />
+                    <span>🚫 Blacklisted (लेन-देन बंद)</span>
+                  </span>
+                )}
               </div>
               <div className="flex flex-wrap items-center gap-x-3 text-xs text-slate-500 mt-0.5 font-mono">
                 {activeParty.phone && <span>📱 {activeParty.phone}</span>}
@@ -563,7 +607,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                 <button
                   type="button"
                   onClick={handleOpenInstantUpiQr}
-                  className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs active:scale-95"
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs active:scale-95 cursor-pointer"
                   title="Generate Dynamic UPI QR for instant customer payment"
                 >
                   <QrCode className="w-4 h-4 text-white" />
@@ -572,7 +616,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                 <button
                   type="button"
                   onClick={() => openPaymentInForParty(activeParty.id)}
-                  className="flex items-center gap-1 px-2.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition border border-slate-200 active:scale-95"
+                  className="flex items-center gap-1 px-2.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition border border-slate-200 active:scale-95 cursor-pointer"
                   title="नकद या बैंक एंट्री दर्ज करें"
                 >
                   <ArrowDownLeft className="w-3.5 h-3.5" />
@@ -582,7 +626,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
             ) : (
               <button
                 onClick={() => setIsPaymentOutModalOpen(true)}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs active:scale-95"
+                className="flex items-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs active:scale-95 cursor-pointer"
               >
                 <ArrowUpRight className="w-4 h-4 stroke-[2.5]" />
                 <span>+ Payment Out (पैसा दिया)</span>
@@ -604,12 +648,40 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
             {/* Print Statement Button */}
             <button
               onClick={() => window.print()}
-              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1"
+              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer"
               title="Print Account Statement"
             >
               <Printer className="w-4 h-4" />
-              <span className="hidden sm:inline">Print (प्रिंट)</span>
+              <span className="hidden sm:inline">Print</span>
             </button>
+
+            {/* Blacklist / Inactive Toggle (Requirement 3b) */}
+            <button
+              type="button"
+              onClick={() => handleToggleBlacklistParty(activeParty)}
+              className={`p-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 border active:scale-95 cursor-pointer ${
+                activeParty.isBlacklisted
+                  ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
+                  : 'bg-slate-100 text-slate-700 border-slate-300 hover:bg-slate-200'
+              }`}
+              title={activeParty.isBlacklisted ? "पार्टी को सक्रिय करें" : "पार्टी को ब्लैकलिस्ट / लेन-देन बंद करें"}
+            >
+              <Ban className="w-4 h-4" />
+              <span>{activeParty.isBlacklisted ? 'सक्रिय करें' : '🚫 Blacklist'}</span>
+            </button>
+
+            {/* Delete Party Button (Requirement 3a) */}
+            {onDeleteParty && (
+              <button
+                type="button"
+                onClick={() => setPartyToDelete(activeParty)}
+                className="p-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
+                title="Delete Party (स्थायी रूप से हटाएं)"
+              >
+                <Trash2 className="w-4 h-4 text-red-600" />
+                <span className="hidden sm:inline">Delete</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -1326,20 +1398,44 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
         </div>
       </div>
 
-      {/* Search and Filter */}
+      {/* Smart Universal Search Bar & Filter Strip (Requirement 1, 2, 3, 4) */}
       <div className="bg-white p-3 sm:p-4 rounded-2xl border border-slate-200 shadow-2xs flex flex-col sm:flex-row gap-2.5 sm:items-center justify-between">
         <div className="relative flex-1">
-          <Search className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
-          <input
-            type="text"
-            placeholder="Search party by name, phone or GSTIN (पार्टी नाम, मोबाइल या GSTIN से खोजें)..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-medium"
+          <UniversalCustomerSearch
+            parties={parties}
+            selectedParty={selectedParty}
+            onSelectParty={(party) => {
+              setSelectedParty(party);
+            }}
+            onQuickAddParty={async (quickName, quickPhone) => {
+              const newParty: Party = {
+                id: `pty-${Date.now()}`,
+                name: quickName,
+                type: partyTypeFilter === 'SUPPLIER' ? 'SUPPLIER' : 'CUSTOMER',
+                phone: quickPhone,
+                address: '',
+                state: company.state || 'Maharashtra',
+                stateCode: company.stateCode || '27',
+                creditLimit: 25000,
+                currentBalance: 0,
+                createdAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+              };
+              await onSaveParty(newParty);
+              setSelectedParty(newParty);
+              showToast(`नया ग्राहक जोड़ा गया: ${newParty.name}`);
+              return newParty;
+            }}
+            placeholder="यूनिवर्सल सर्च: मोबाइल नंबर (पूरा/अंतिम अंक), ग्राहक/दुकान नाम, गाँव, पता या GSTIN... [F2 / Alt+C]"
+            shortcutHint="F2 / Alt+C"
+            isPOSMode={false}
+            filterType={partyTypeFilter}
+            onSearchChange={(q) => setSearchQuery(q)}
+            inputClassName="py-2.5 text-xs sm:text-sm font-medium"
           />
         </div>
 
-        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+        <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-semibold shrink-0">
           {[
             { id: 'ALL', label: 'All (सभी पार्टियां)' },
             { id: 'CUSTOMER', label: 'Customers (ग्राहक)' },
@@ -1389,8 +1485,14 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                     title="Click row to open detailed ledger statement"
                   >
                     <td className="py-3 px-4">
-                      <div className="font-extrabold text-slate-900 text-sm group-hover:text-blue-700 transition flex items-center gap-1.5">
+                      <div className="font-extrabold text-slate-900 text-sm group-hover:text-blue-700 transition flex items-center gap-1.5 flex-wrap">
                         <span>{party.name}</span>
+                        {party.isBlacklisted && (
+                          <span className="text-[10px] bg-red-100 text-red-800 border border-red-200 px-1.5 py-0.5 rounded font-bold flex items-center gap-0.5">
+                            <Ban className="w-2.5 h-2.5 text-red-600" />
+                            <span>🚫 लेन-देन बंद</span>
+                          </span>
+                        )}
                         <span className="text-blue-500 opacity-0 group-hover:opacity-100 transition text-[11px] font-medium">
                           → View Ledger
                         </span>
@@ -1439,7 +1541,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                     </td>
 
                     <td className="py-3 px-4 text-right">
-                      <div className="flex items-center justify-end gap-2">
+                      <div className="flex items-center justify-end gap-1.5 flex-wrap">
                         {/* Prominent View Ledger Button (Requirement 1) */}
                         <button
                           type="button"
@@ -1447,7 +1549,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                             e.stopPropagation();
                             setSelectedParty(party);
                           }}
-                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs"
+                          className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
                           title="View complete running ledger & statement"
                         >
                           <Eye className="w-3.5 h-3.5 stroke-[2.5]" />
@@ -1462,7 +1564,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                               e.stopPropagation();
                               openPaymentInForParty(party.id);
                             }}
-                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold transition flex items-center gap-1"
+                            className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
                             title="पैसे प्राप्त करें"
                           >
                             <ArrowDownLeft className="w-3.5 h-3.5" />
@@ -1476,7 +1578,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                               setSelectedParty(party);
                               setIsPaymentOutModalOpen(true);
                             }}
-                            className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center gap-1"
+                            className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
                             title="सप्लायर को भुगतान दर्ज करें"
                           >
                             <ArrowUpRight className="w-3.5 h-3.5" />
@@ -1497,6 +1599,36 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                             <Share2 className="w-3.5 h-3.5" />
                           </a>
                         )}
+
+                        {/* Blacklist / Inactive Toggle (Requirement 3b) */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleToggleBlacklistParty(party, e)}
+                          className={`px-2 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 border active:scale-95 cursor-pointer ${
+                            party.isBlacklisted
+                              ? 'bg-red-50 text-red-700 border-red-300 hover:bg-red-100'
+                              : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                          }`}
+                          title={party.isBlacklisted ? "क्लिक करके पार्टी को सक्रिय करें" : "क्लिक करके पार्टी को ब्लैकलिस्ट / लेन-देन बंद करें"}
+                        >
+                          <Ban className="w-3.5 h-3.5" />
+                          <span>{party.isBlacklisted ? '🚫 Inactive' : 'Blacklist'}</span>
+                        </button>
+
+                        {/* Delete Party Button (Requirement 3a) */}
+                        {onDeleteParty && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setPartyToDelete(party);
+                            }}
+                            className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition border border-transparent hover:border-red-200 cursor-pointer"
+                            title="Delete Party (स्थायी डिलीट)"
+                          >
+                            <Trash2 className="w-4 h-4 text-red-500" />
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -1506,7 +1638,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
           </table>
         </div>
 
-        {/* Mobile Touch Cards View (Requirement 1) */}
+        {/* Mobile Touch Cards View (Requirement 1 & 3) */}
         <div className="block md:hidden divide-y divide-slate-100">
           {filteredParties.map(party => {
             const isReceivable = party.currentBalance > 0;
@@ -1521,8 +1653,13 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
               >
                 <div className="flex items-start justify-between gap-2">
                   <div>
-                    <h4 className="text-sm font-black text-slate-900 leading-tight">
-                      {party.name}
+                    <h4 className="text-sm font-black text-slate-900 leading-tight flex items-center gap-1.5 flex-wrap">
+                      <span>{party.name}</span>
+                      {party.isBlacklisted && (
+                        <span className="text-[10px] bg-red-100 text-red-800 border border-red-200 px-1.5 py-0.5 rounded font-bold">
+                          🚫 लेन-देन बंद
+                        </span>
+                      )}
                     </h4>
                     <div className="text-[11px] text-slate-500 flex items-center gap-2 mt-0.5">
                       <span className={`px-1.5 py-0.2 rounded text-[10px] font-bold ${
@@ -1548,17 +1685,17 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                 </div>
 
                 {/* Mobile Action Buttons Bar */}
-                <div className="flex items-center gap-2 pt-1 border-t border-slate-50">
+                <div className="flex items-center gap-1.5 pt-1 border-t border-slate-50 flex-wrap">
                   <button
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
                       setSelectedParty(party);
                     }}
-                    className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs"
+                    className="flex-1 min-w-[120px] py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs"
                   >
                     <Eye className="w-3.5 h-3.5 stroke-[2.5]" />
-                    <span>👁️ View Ledger (खाता देखें)</span>
+                    <span>👁️ View Ledger</span>
                   </button>
 
                   {party.type === 'CUSTOMER' ? (
@@ -1568,7 +1705,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                         e.stopPropagation();
                         openPaymentInForParty(party.id);
                       }}
-                      className="px-3 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 shadow-2xs"
+                      className="px-2.5 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1 shadow-2xs"
                     >
                       <ArrowDownLeft className="w-3.5 h-3.5" />
                       <span>Payment In</span>
@@ -1581,10 +1718,39 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                         setSelectedParty(party);
                         setIsPaymentOutModalOpen(true);
                       }}
-                      className="px-3 py-2 bg-blue-100 text-blue-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1"
+                      className="px-2.5 py-2 bg-blue-100 text-blue-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1"
                     >
                       <ArrowUpRight className="w-3.5 h-3.5" />
                       <span>पैसा दिया</span>
+                    </button>
+                  )}
+
+                  {/* Blacklist toggle button on mobile */}
+                  <button
+                    type="button"
+                    onClick={(e) => handleToggleBlacklistParty(party, e)}
+                    className={`px-2 py-2 rounded-xl text-xs font-bold transition border ${
+                      party.isBlacklisted
+                        ? 'bg-red-50 text-red-700 border-red-300'
+                        : 'bg-slate-100 text-slate-700 border-slate-200'
+                    }`}
+                    title={party.isBlacklisted ? "सक्रिय करें" : "ब्लैकलिस्ट करें"}
+                  >
+                    <Ban className="w-3.5 h-3.5" />
+                  </button>
+
+                  {/* Delete button on mobile */}
+                  {onDeleteParty && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setPartyToDelete(party);
+                      }}
+                      className="p-2 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold transition"
+                      title="Delete Party"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
                     </button>
                   )}
 
@@ -1605,6 +1771,97 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
           })}
         </div>
       </div>
+
+      {/* Delete Party Confirmation Modal (Requirement 3a & 4) */}
+      {partyToDelete && (() => {
+        const hasDuesOrBills = partyToDelete.currentBalance !== 0 || invoices.some(inv => inv.partyId === partyToDelete.id);
+        const linkedBillsCount = invoices.filter(inv => inv.partyId === partyToDelete.id).length;
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+            <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-slate-900">
+              <div className="bg-red-600 text-white p-4 flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold">
+                    <AlertTriangle className="w-5 h-5 text-white" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-sm sm:text-base">🗑️ Delete Party (पार्टी हटाएं)</h3>
+                    <p className="text-[11px] text-red-100">IndexedDB और Supabase दोनों से स्थायी रूप से हटेगा</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPartyToDelete(null)}
+                  className="p-1 rounded-lg text-red-200 hover:text-white"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4 text-xs">
+                {hasDuesOrBills ? (
+                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl space-y-2 text-amber-950">
+                    <div className="font-extrabold text-sm text-red-950 leading-snug flex items-center gap-1.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>चेतावनी: इस पार्टी का पुराना हिसाब/बकाया मौजूद है। क्या आप वाकई इसे डिलीट करना चाहते हैं?</span>
+                    </div>
+                    <p className="text-xs text-amber-900 leading-relaxed">
+                      इस पार्टी का वर्तमान बकाया <strong>{formatINR(partyToDelete.currentBalance)}</strong> है और इसके कुल <strong>{linkedBillsCount} पुराने बिल</strong> हैं। स्थायी डिलीट करने से यह पार्टी दोनों जगह से हमेशा के लिए हट जाएगी।
+                    </p>
+                  </div>
+                ) : (
+                  <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl space-y-2 text-red-900">
+                    <div className="font-extrabold text-sm text-red-950 leading-snug">
+                      क्या आप वाकई पार्टी '{partyToDelete.name}' को हमेशा के लिए हटाना चाहते हैं?
+                    </div>
+                    <p className="text-xs text-red-800 leading-relaxed">
+                      यह पार्टी IndexedDB और Supabase क्लाउड डेटाबेस दोनों से हमेशा के लिए मिट जाएगी।
+                    </p>
+                  </div>
+                )}
+
+                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 font-medium text-slate-700">
+                  <div className="flex justify-between">
+                    <span>पार्टी का नाम:</span>
+                    <span className="font-bold text-slate-900">{partyToDelete.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>प्रकार (Type):</span>
+                    <span className="font-bold text-slate-900">{partyToDelete.type === 'CUSTOMER' ? 'Customer (ग्राहक)' : 'Supplier (सप्लायर)'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>वर्तमान बकाया (Balance):</span>
+                    <span className={`font-mono font-bold ${partyToDelete.currentBalance > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
+                      {formatINR(partyToDelete.currentBalance)}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setPartyToDelete(null)}
+                    disabled={isDeletingParty}
+                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
+                  >
+                    रद्द करें (Cancel)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleConfirmDeleteParty}
+                    disabled={isDeletingParty}
+                    className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    <span>{isDeletingParty ? 'हटाया जा रहा है...' : 'हाँ, पार्टी डिलीट करें'}</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Payment In Modal Component */}
       <PaymentInModal

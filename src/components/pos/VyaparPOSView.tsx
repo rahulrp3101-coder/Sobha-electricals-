@@ -9,6 +9,7 @@ import { PartySelectModal } from './PartySelectModal';
 import { FinalInvoiceModal } from './FinalInvoiceModal';
 import { BarcodeCameraModal } from './BarcodeCameraModal';
 import { DynamicUpiQrModal } from './DynamicUpiQrModal';
+import { UniversalCustomerSearch } from '../common/UniversalCustomerSearch';
 import { generateUpiQrDataUrl } from '../../services/upiQrService';
 import { playBarcodeBeep } from '../../services/soundEffects';
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner';
@@ -67,6 +68,8 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
 
   // Cart Lines for Current Bill
   const [cartLines, setCartLines] = useState<InvoiceItem[]>([]);
+  const [editingQtyItemId, setEditingQtyItemId] = useState<string | null>(null);
+  const [editingQtyVal, setEditingQtyVal] = useState<string>('');
 
   // Item Search & Input fields
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -141,10 +144,18 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         (i.sku && i.sku.trim().toLowerCase() === cleanCode)
     );
 
+    // Clear search box and dropdown so hardware scanner characters don't linger
+    setSearchQuery('');
+    setIsSearchDropdownOpen(false);
+
     if (foundItem) {
       playBarcodeBeep();
-      addItemToCartDirectly(foundItem, 1, 0);
-      showFlashToast(`स्कैन सफल: ${foundItem.name} (${formatINR(foundItem.retailPrice || foundItem.wholesalePrice)})`);
+      // Requirement 2: Use the quantity from the top Quantity box if preset (e.g., 5), otherwise default to 1 (+1 on Re-scan)
+      const qtyToAdd = itemQuantity > 0 ? itemQuantity : 1;
+      addItemToCartDirectly(foundItem, qtyToAdd, 0);
+      showFlashToast(`⚡ स्कैन सफल: +${qtyToAdd} ${foundItem.name} (${formatINR(foundItem.retailPrice || foundItem.wholesalePrice)})`);
+      // Reset top quantity box back to 1 for subsequent normal scans
+      setItemQuantity(1);
     } else {
       // Barcode not in database -> Quick Add
       playBarcodeBeep();
@@ -445,10 +456,10 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
     }
   };
 
-  // Keyboard shortcut listener: F2 or Ctrl+Enter to finalize bill
+  // Keyboard shortcut listener: Ctrl+Enter or F8 to finalize bill (F2 is dedicated for Universal Customer Search)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'F2' || (e.ctrlKey && e.key === 'Enter')) {
+      if ((e.ctrlKey && e.key === 'Enter') || e.key === 'F8') {
         e.preventDefault();
         if (cartLines.length > 0 && !isSaving) {
           handleFinalizeBill();
@@ -505,64 +516,93 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       {/* ========================================================================= */}
       <div className="shrink-0 bg-white border-b border-slate-200 px-2.5 py-2 sm:px-4 sm:py-2.5 z-20 shadow-2xs">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
-          {/* Left Side: Customer Single-line Compact View */}
+          {/* Left Side: Smart Universal Customer Search & Active Customer View (Requirement 1, 2, 3, 4) */}
           <div className="flex items-center gap-2 min-w-0 flex-1">
             <div className="w-8 h-8 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 flex items-center justify-center shrink-0 font-bold">
               <UserCheck className="w-4 h-4" />
             </div>
 
-            <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <span className="text-xs sm:text-sm font-extrabold text-slate-900 truncate max-w-[150px] sm:max-w-[220px]">
+            {/* Smart Universal Search Bar (Omni-Search, Live Card Dropdown, Keyboard Nav, Quick Add) */}
+            <div className="flex-1 min-w-[200px] max-w-xs sm:max-w-sm lg:max-w-md">
+              <UniversalCustomerSearch
+                parties={parties}
+                selectedParty={selectedParty}
+                onSelectParty={(party) => {
+                  setSelectedParty(party);
+                  showFlashToast(`ग्राहक चुना गया: ${party.name}`);
+                }}
+                onQuickAddParty={async (name, phone) => {
+                  const newParty: Party = {
+                    id: `pty-${Date.now()}`,
+                    name,
+                    type: 'CUSTOMER',
+                    phone,
+                    address: '',
+                    state: company.state || 'Maharashtra',
+                    stateCode: company.stateCode || '27',
+                    creditLimit: 50000,
+                    currentBalance: 0,
+                    createdAt: new Date().toISOString(),
+                    updatedAt: new Date().toISOString(),
+                  };
+                  await onSaveParty(newParty);
+                  setSelectedParty(newParty);
+                  showFlashToast(`नया ग्राहक जोड़ा गया: ${newParty.name}`);
+                  return newParty;
+                }}
+                placeholder="ग्राहक खोजें (मोबाइल पूरा/अंतिम अंक, नाम, गाँव, दुकान)... [F2 / Alt+C]"
+                shortcutHint="F2 / Alt+C"
+                isPOSMode={true}
+                filterType="CUSTOMER"
+              />
+            </div>
+
+            {/* Selected Customer Status Badge */}
+            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+              <div className="flex flex-col text-left">
+                <span className="text-xs font-black text-slate-900 truncate max-w-[130px]">
                   {selectedParty.name}
                 </span>
-                <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded shrink-0 ${
-                  selectedParty.type === 'CUSTOMER' ? 'bg-emerald-50 text-emerald-800' : 'bg-blue-50 text-blue-800'
-                }`}>
-                  {selectedParty.type === 'CUSTOMER' ? 'Customer' : 'Supplier'}
-                </span>
+                {selectedParty.phone && (
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    {selectedParty.phone}
+                  </span>
+                )}
               </div>
 
-              {selectedParty.phone && (
-                <span className="text-[11px] font-mono text-slate-500 hidden sm:inline shrink-0">
-                  📱 {selectedParty.phone}
-                </span>
-              )}
-
-              {/* Outstanding Balance Badge */}
               {selectedParty.currentBalance !== 0 && (
-                <span className={`text-[10px] font-mono font-bold px-1.5 py-0.2 rounded shrink-0 ${
+                <span className={`text-[10px] font-mono font-bold px-1.5 py-0.5 rounded shrink-0 ${
                   selectedParty.currentBalance > 0
-                    ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                    ? 'bg-red-100 text-red-800 border border-red-300 font-extrabold'
                     : 'bg-purple-100 text-purple-900 border border-purple-300'
                 }`}>
                   {selectedParty.currentBalance > 0
-                    ? `${formatINR(selectedParty.currentBalance)} Due (बाकी)`
-                    : `${formatINR(Math.abs(selectedParty.currentBalance))} Advance`}
+                    ? `${formatINR(selectedParty.currentBalance)} बाकी`
+                    : `${formatINR(Math.abs(selectedParty.currentBalance))} जमा`}
                 </span>
               )}
-
-              {/* Change Customer Button */}
-              <button
-                type="button"
-                onClick={() => setIsPartyModalOpen(true)}
-                className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-xs font-bold transition flex items-center gap-1 border border-blue-200 active:scale-95 shrink-0"
-                title="Change or select party (F4)"
-              >
-                <span>बदलें (Change)</span>
-              </button>
-
-              {/* Today Sales Quick Badge */}
-              <button
-                type="button"
-                onClick={() => setShowRecentBillsModal(true)}
-                className="hidden xl:flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-200 transition shrink-0"
-                title="View today's generated bills"
-              >
-                <Clock className="w-3 h-3 text-slate-500" />
-                <span>Today: <strong>{formatINR(todaySalesTotal)}</strong> ({todayInvoices.length})</span>
-              </button>
             </div>
+
+            {/* Change customer list modal fallback button */}
+            <button
+              type="button"
+              onClick={() => setIsPartyModalOpen(true)}
+              className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition border border-slate-300 active:scale-95 shrink-0"
+              title="पार्टी सूची मोडल (F4)"
+            >
+              <span>सूची</span>
+            </button>
+
+            {/* Today Sales Quick Badge */}
+            <button
+              type="button"
+              onClick={() => setShowRecentBillsModal(true)}
+              className="hidden xl:flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-200 transition shrink-0"
+              title="View today's generated bills"
+            >
+              <Clock className="w-3 h-3 text-slate-500" />
+              <span>Today: <strong>{formatINR(todaySalesTotal)}</strong> ({todayInvoices.length})</span>
+            </button>
 
             {/* Clear Cart / Reset Bill button */}
             {cartLines.length > 0 && (
@@ -714,27 +754,41 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               <span className="hidden sm:inline">Camera</span>
             </button>
 
-            {/* Quantity Input */}
-            <div className="flex items-center bg-slate-50 border border-slate-300 rounded-xl px-1 py-0.5 shrink-0">
-              <span className="text-[10px] text-slate-400 font-bold px-1 hidden sm:inline">Qty:</span>
+            {/* Quantity Input (Requirement 2.3: Preset Quantity for Scan & Add) */}
+            <div 
+              className="flex items-center bg-slate-50 border border-slate-300 rounded-xl px-1 py-0.5 shrink-0 focus-within:border-blue-500 focus-within:bg-white transition"
+              title="स्कैन मात्रा: यदि यहाँ 5 डालते हैं, तो बारकोड स्कैन करने पर सीधे 5 मात्रा जुड़ेगी"
+            >
+              <span className="text-[10px] text-slate-500 font-bold px-1 hidden sm:inline">Qty:</span>
               <button
                 type="button"
                 onClick={() => setItemQuantity(Math.max(1, itemQuantity - 1))}
-                className="w-5 h-5 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs shadow-2xs"
+                className="w-5 h-5 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs shadow-2xs cursor-pointer active:scale-95"
               >
                 -
               </button>
               <input
-                type="number"
-                min="1"
+                type="text"
+                inputMode="numeric"
                 value={itemQuantity}
-                onChange={(e) => setItemQuantity(Math.max(1, Number(e.target.value) || 1))}
+                onFocus={(e) => e.target.select()}
+                onClick={(e) => e.currentTarget.select()}
+                onChange={(e) => {
+                  const raw = e.target.value.replace(/[^0-9]/g, '');
+                  setItemQuantity(raw ? Math.max(1, parseInt(raw, 10)) : 1);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    searchInputRef.current?.focus();
+                  }
+                }}
                 className="w-8 text-center bg-transparent font-mono font-bold text-xs text-slate-900 focus:outline-none"
+                title="स्कैन मात्रा डालें (उदा. 5) और बारकोड स्कैन करें"
               />
               <button
                 type="button"
                 onClick={() => setItemQuantity(itemQuantity + 1)}
-                className="w-5 h-5 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs shadow-2xs"
+                className="w-5 h-5 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs shadow-2xs cursor-pointer active:scale-95"
               >
                 +
               </button>
@@ -868,25 +922,60 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                       </td>
 
                       <td className="py-2 px-3 text-center">
-                        <div className="inline-flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200 shadow-2xs">
+                        <div className="inline-flex items-center bg-slate-100 rounded-lg p-0.5 border border-slate-200 shadow-2xs hover:border-blue-400 transition">
                           <button
                             type="button"
                             onClick={() => updateLineQty(idx, line.quantity - 1)}
-                            className="w-6 h-6 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs active:bg-slate-300 transition"
+                            className="w-6 h-6 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs active:bg-slate-300 transition cursor-pointer"
+                            title="मात्रा घटाएं (-1)"
                           >
                             -
                           </button>
                           <input
-                            type="number"
-                            min="1"
-                            value={line.quantity}
-                            onChange={(e) => updateLineQty(idx, Math.max(1, Number(e.target.value) || 1))}
-                            className="w-10 text-center bg-transparent font-mono font-bold text-xs text-slate-900 focus:outline-none"
+                            type="text"
+                            inputMode="numeric"
+                            value={editingQtyItemId === line.itemId ? editingQtyVal : line.quantity}
+                            onFocus={(e) => {
+                              setEditingQtyItemId(line.itemId);
+                              setEditingQtyVal(String(line.quantity));
+                              e.target.select();
+                            }}
+                            onClick={(e) => {
+                              e.currentTarget.select();
+                            }}
+                            onChange={(e) => {
+                              const raw = e.target.value.replace(/[^0-9]/g, '');
+                              setEditingQtyVal(raw);
+                              const parsed = parseInt(raw, 10);
+                              if (!isNaN(parsed) && parsed > 0) {
+                                updateLineQty(idx, parsed);
+                              }
+                            }}
+                            onBlur={() => {
+                              const parsed = parseInt(editingQtyVal, 10);
+                              if (isNaN(parsed) || parsed < 1) {
+                                updateLineQty(idx, 1);
+                              }
+                              setEditingQtyItemId(null);
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                const parsed = parseInt(editingQtyVal, 10);
+                                if (isNaN(parsed) || parsed < 1) {
+                                  updateLineQty(idx, 1);
+                                }
+                                setEditingQtyItemId(null);
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            className="w-11 text-center bg-transparent font-mono font-bold text-xs text-slate-900 focus:outline-none focus:bg-white focus:ring-1 focus:ring-blue-600 rounded py-0.5 transition"
+                            title="मात्रा बदलें: क्लिक करते ही पूरी संख्या सेलेक्ट होगी, सीधे टाइप करके Enter दबाएं"
                           />
                           <button
                             type="button"
                             onClick={() => updateLineQty(idx, line.quantity + 1)}
-                            className="w-6 h-6 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs active:bg-slate-300 transition"
+                            className="w-6 h-6 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs active:bg-slate-300 transition cursor-pointer"
+                            title="मात्रा बढ़ाएं (+1)"
                           >
                             +
                           </button>
@@ -1054,12 +1143,12 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               disabled={isSaving || cartLines.length === 0}
               onClick={handleFinalizeBill}
               className="py-2.5 px-5 sm:px-6 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs sm:text-sm font-black transition shadow-lg flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer"
-              title="Save & Print Bill (F2 or Ctrl+Enter)"
+              title="Save & Print Bill (Ctrl+Enter / F8)"
             >
               <Printer className="w-4 h-4 stroke-[2.5]" />
               <span>{isSaving ? 'सेव हो रहा है...' : '💾 Save & Print Bill (प्रिंट करें)'}</span>
               <span className="hidden sm:inline text-[10px] bg-emerald-700 text-emerald-100 px-1.5 py-0.5 rounded font-mono">
-                F2
+                Ctrl+↵ / F8
               </span>
             </button>
           </div>

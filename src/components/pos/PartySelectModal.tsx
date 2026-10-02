@@ -37,6 +37,8 @@ export const PartySelectModal: React.FC<PartySelectModalProps> = ({
   if (!isOpen) return null;
 
   const filteredParties = parties.filter((p) => {
+    // Exclude blacklisted / inactive parties so no new bills are created for them (Requirement 3b)
+    if (p.isBlacklisted) return false;
     const q = searchQuery.toLowerCase();
     return (
       p.name.toLowerCase().includes(q) ||

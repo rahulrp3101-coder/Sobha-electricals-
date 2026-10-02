@@ -10,7 +10,8 @@ import {
 } from './types';
 import { 
   getDB, getAllFromStore, putToStore, deleteFromStore, createInvoiceTransaction, 
-  recordPaymentTransaction, saveItemTransaction, savePartyTransaction, saveExpenseTransaction 
+  recordPaymentTransaction, saveItemTransaction, savePartyTransaction, saveExpenseTransaction,
+  deleteInvoiceTransaction, deleteItemTransaction, deletePartyTransaction, togglePartyBlacklistTransaction
 } from './db/indexedDB';
 import { DEFAULT_COMPANY } from './db/defaultData';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
@@ -304,9 +305,41 @@ export default function App() {
 
   // Handle Delete Expense
   const handleDeleteExpense = async (id: string) => {
+    setExpenses(prev => prev.filter(e => e.id !== id));
     await deleteFromStore('expenses', id);
     await loadDatabaseData();
     syncMutation('expenses', { id }, 'DELETE').catch(() => {});
+  };
+
+  // Handle Delete Invoice (Rollback inventory stock, reverse khata balance, remove from IndexedDB + Supabase)
+  const handleDeleteInvoice = async (invoiceId: string) => {
+    // Optimistic UI update: disappear immediately
+    setInvoices(prev => prev.filter(inv => inv.id !== invoiceId));
+    await deleteInvoiceTransaction(invoiceId);
+    await loadDatabaseData();
+  };
+
+  // Handle Delete Inventory Item (Remove from IndexedDB + Supabase)
+  const handleDeleteItem = async (itemId: string) => {
+    // Optimistic UI update: disappear immediately
+    setItems(prev => prev.filter(i => i.id !== itemId));
+    await deleteItemTransaction(itemId);
+    await loadDatabaseData();
+  };
+
+  // Handle Delete Party (Remove from IndexedDB + Supabase)
+  const handleDeleteParty = async (partyId: string) => {
+    // Optimistic UI update: disappear immediately
+    setParties(prev => prev.filter(p => p.id !== partyId));
+    await deletePartyTransaction(partyId);
+    await loadDatabaseData();
+  };
+
+  // Handle Toggle Party Blacklist (Mark inactive so they cannot be selected for new bills, but preserve ledger)
+  const handleToggleBlacklist = async (partyId: string, isBlacklisted: boolean) => {
+    setParties(prev => prev.map(p => p.id === partyId ? { ...p, isBlacklisted } : p));
+    await togglePartyBlacklistTransaction(partyId, isBlacklisted);
+    await loadDatabaseData();
   };
 
   // Handle Update Shop Settings
@@ -485,6 +518,7 @@ export default function App() {
               setIsCreatingInvoice(true);
             }}
             onSelectParty={handleSelectPartyFromInvoice}
+            onDeleteInvoice={handleDeleteInvoice}
           />
         )}
 
@@ -492,6 +526,7 @@ export default function App() {
           <InventoryMaster
             items={items}
             onSaveItem={handleSaveItem}
+            onDeleteItem={handleDeleteItem}
           />
         )}
 
@@ -509,6 +544,8 @@ export default function App() {
             }}
             initialPartyId={selectedPartyIdForLedger}
             onClearInitialParty={() => setSelectedPartyIdForLedger(null)}
+            onDeleteParty={handleDeleteParty}
+            onToggleBlacklist={handleToggleBlacklist}
           />
         )}
 
