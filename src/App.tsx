@@ -10,7 +10,7 @@ import {
 } from './types';
 import { 
   getDB, getAllFromStore, putToStore, deleteFromStore, createInvoiceTransaction, 
-  recordPaymentTransaction 
+  recordPaymentTransaction, saveItemTransaction, savePartyTransaction, saveExpenseTransaction 
 } from './db/indexedDB';
 import { DEFAULT_COMPANY } from './db/defaultData';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
@@ -38,6 +38,12 @@ import {
   AdminSession 
 } from './services/adminAuth';
 import { checkAndRunDailyAutoBackup } from './services/backupService';
+import { 
+  syncMutation, 
+  pullFromSupabaseToIndexedDB, 
+  subscribeToRealtimeSync, 
+  getSupabaseConfig 
+} from './services/supabaseService';
 import { CheckCircle2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 
@@ -153,7 +159,7 @@ export default function App() {
     setSessionTerminatedReason(null);
   };
 
-  // Load Database Data on Mount
+  // Load Database Data on Mount & Two-Way Cloud Sync (Requirement 2)
   const loadDatabaseData = useCallback(async () => {
     try {
       await getDB();
@@ -176,6 +182,31 @@ export default function App() {
       setPayments(allPayments);
       setExpenses(allExpenses);
       await refreshSyncCount();
+
+      // Cloud Two-Way Sync on Load (Mobile <-> PC Sync)
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        const cfg = getSupabaseConfig();
+        if (cfg.isConnected) {
+          pullFromSupabaseToIndexedDB().then(res => {
+            if (res.pulledCount > 0) {
+              // Reload in-memory state with freshly pulled cloud invoices and parties
+              Promise.all([
+                getAllFromStore<Item>('items'),
+                getAllFromStore<Party>('parties'),
+                getAllFromStore<Invoice>('invoices'),
+                getAllFromStore<PaymentTransaction>('payments'),
+                getAllFromStore<Expense>('expenses'),
+              ]).then(([freshItems, freshParties, freshInvs, freshPays, freshExps]) => {
+                setItems(freshItems);
+                setParties(freshParties);
+                setInvoices(freshInvs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()));
+                setPayments(freshPays);
+                setExpenses(freshExps);
+              }).catch(() => {});
+            }
+          }).catch(() => {});
+        }
+      }
     } catch (err) {
       console.error('Failed to load local IndexedDB data', err);
     } finally {
@@ -187,6 +218,14 @@ export default function App() {
     loadDatabaseData();
   }, [loadDatabaseData]);
 
+  // Live Supabase Realtime multi-device sync
+  useEffect(() => {
+    const unsubscribe = subscribeToRealtimeSync(() => {
+      loadDatabaseData();
+    });
+    return () => unsubscribe();
+  }, [loadDatabaseData]);
+
   // Handle Save Invoice (From POS or InvoiceForm)
   const handleSaveInvoice = async (
     invoice: Invoice, 
@@ -195,6 +234,13 @@ export default function App() {
   ): Promise<Invoice> => {
     const saved = await createInvoiceTransaction(invoice, isOnline);
     await loadDatabaseData();
+
+    // Direct Supabase mutation sync (Requirement 2)
+    syncMutation(saved.documentType === 'PURCHASE_BILL' ? 'purchases' : 'invoices', saved).catch(() => {});
+    if (saved.partyId) {
+      const party = parties.find(p => p.id === saved.partyId);
+      if (party) syncMutation('parties', party).catch(() => {});
+    }
 
     // Trigger celebration particles
     try {
@@ -225,32 +271,41 @@ export default function App() {
 
   // Handle Save / Update Product Item
   const handleSaveItem = async (item: Item) => {
-    await putToStore('items', item);
+    await saveItemTransaction(item);
     await loadDatabaseData();
+    syncMutation('items', item).catch(() => {});
   };
 
   // Handle Save / Update Party
   const handleSaveParty = async (party: Party) => {
-    await putToStore('parties', party);
+    await savePartyTransaction(party);
     await loadDatabaseData();
+    syncMutation('parties', party).catch(() => {});
   };
 
   // Handle Record Payment
   const handleRecordPayment = async (payment: PaymentTransaction) => {
     await recordPaymentTransaction(payment);
     await loadDatabaseData();
+    syncMutation('payments', payment).catch(() => {});
+    if (payment.partyId) {
+      const party = parties.find(p => p.id === payment.partyId);
+      if (party) syncMutation('parties', party).catch(() => {});
+    }
   };
 
   // Handle Save Expense
   const handleSaveExpense = async (expense: Expense) => {
-    await putToStore('expenses', expense);
+    await saveExpenseTransaction(expense);
     await loadDatabaseData();
+    syncMutation('expenses', expense).catch(() => {});
   };
 
   // Handle Delete Expense
   const handleDeleteExpense = async (id: string) => {
     await deleteFromStore('expenses', id);
     await loadDatabaseData();
+    syncMutation('expenses', { id }, 'DELETE').catch(() => {});
   };
 
   // Handle Update Shop Settings

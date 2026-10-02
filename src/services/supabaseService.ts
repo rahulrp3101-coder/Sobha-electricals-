@@ -193,12 +193,28 @@ ALTER TABLE purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
 
+-- Drop previous policies if re-running
+DROP POLICY IF EXISTS "Allow anon read/write items" ON items;
+DROP POLICY IF EXISTS "Allow anon read/write parties" ON parties;
+DROP POLICY IF EXISTS "Allow anon read/write invoices" ON invoices;
+DROP POLICY IF EXISTS "Allow anon read/write purchases" ON purchases;
+DROP POLICY IF EXISTS "Allow anon read/write expenses" ON expenses;
+DROP POLICY IF EXISTS "Allow anon read/write payments" ON payments;
+
 CREATE POLICY "Allow anon read/write items" ON items FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write parties" ON parties FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write invoices" ON invoices FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write purchases" ON purchases FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write expenses" ON expenses FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write payments" ON payments FOR ALL TO anon USING (true) WITH CHECK (true);
+
+-- Enable Supabase Realtime for instant multi-device live sync
+ALTER PUBLICATION supabase_realtime ADD TABLE items;
+ALTER PUBLICATION supabase_realtime ADD TABLE parties;
+ALTER PUBLICATION supabase_realtime ADD TABLE invoices;
+ALTER PUBLICATION supabase_realtime ADD TABLE purchases;
+ALTER PUBLICATION supabase_realtime ADD TABLE expenses;
+ALTER PUBLICATION supabase_realtime ADD TABLE payments;
 `;
 }
 
@@ -547,4 +563,148 @@ export function initAutoSyncOnNetworkChange(onSyncComplete?: (res: any) => void)
     window.removeEventListener('online', handleOnline);
     clearInterval(interval);
   };
+}
+
+/**
+ * Direct mutation sync for immediate push to Supabase (Requirement 2)
+ */
+export async function syncMutation(
+  table: 'items' | 'parties' | 'invoices' | 'purchases' | 'expenses' | 'payments',
+  data: any,
+  action: 'UPSERT' | 'DELETE' = 'UPSERT'
+): Promise<boolean> {
+  const client = getSupabaseClient();
+  if (!client || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    return false;
+  }
+
+  try {
+    if (action === 'DELETE') {
+      await client.from(table).delete().eq('id', data.id || data);
+      return true;
+    }
+
+    let row: any = null;
+    if (table === 'items') {
+      row = {
+        id: data.id,
+        name: data.name,
+        barcode: data.barcode || null,
+        sale_price: data.retailPrice || 0,
+        purchase_price: data.purchasePrice || 0,
+        stock: data.currentStock || 0,
+        gst_rate: data.taxRate || 0,
+        data_json: data,
+        updated_at: data.updatedAt || new Date().toISOString(),
+      };
+    } else if (table === 'parties') {
+      row = {
+        id: data.id,
+        name: data.name,
+        type: data.type,
+        phone: data.phone || null,
+        gstin: data.gstin || null,
+        address: data.address || null,
+        opening_balance: data.openingBalance || 0,
+        current_balance: data.currentBalance || 0,
+        data_json: data,
+        updated_at: data.updatedAt || new Date().toISOString(),
+      };
+    } else if (table === 'invoices') {
+      row = {
+        id: data.id,
+        invoice_number: data.invoiceNumber,
+        date: data.date,
+        party_id: data.partyId || null,
+        items_json: data.items || [],
+        total_amount: data.grandTotal || 0,
+        paid_amount: data.receivedAmount || 0,
+        balance_amount: data.balanceAmount || 0,
+        payment_mode: data.paymentMode || 'CASH',
+        data_json: data,
+        updated_at: data.updatedAt || data.createdAt || new Date().toISOString(),
+      };
+    } else if (table === 'purchases') {
+      row = {
+        id: data.id,
+        bill_number: data.invoiceNumber,
+        date: data.date,
+        supplier_id: data.partyId || null,
+        items_json: data.items || [],
+        total_amount: data.grandTotal || 0,
+        paid_amount: data.receivedAmount || 0,
+        balance_amount: data.balanceAmount || 0,
+        data_json: data,
+        updated_at: data.updatedAt || data.createdAt || new Date().toISOString(),
+      };
+    } else if (table === 'expenses') {
+      row = {
+        id: data.id,
+        category: data.category,
+        amount: data.amount || 0,
+        payment_mode: data.paymentMode || 'CASH',
+        date: data.date,
+        notes: data.notes || data.title || null,
+        is_gst: Boolean(data.isGstApplicable),
+        gst_amount: data.taxAmount || 0,
+        data_json: data,
+        updated_at: data.createdAt || new Date().toISOString(),
+      };
+    } else if (table === 'payments') {
+      row = {
+        id: data.id,
+        party_id: data.partyId || null,
+        type: data.type,
+        amount: data.amount || 0,
+        payment_mode: data.paymentMode || 'CASH',
+        date: data.date,
+        notes: data.notes || null,
+        data_json: data,
+        updated_at: data.createdAt || new Date().toISOString(),
+      };
+    }
+
+    if (row) {
+      const { error } = await client.from(table).upsert(row, { onConflict: 'id' });
+      if (!error) {
+        // Mark local record as synced in IndexedDB
+        await putToStore(table === 'purchases' ? 'invoices' : table, {
+          ...data,
+          is_synced: true,
+          isSynced: true,
+        });
+        return true;
+      }
+    }
+    return false;
+  } catch (err) {
+    console.warn(`Direct syncMutation failed for ${table}:`, err);
+    return false;
+  }
+}
+
+/**
+ * Subscribes to Supabase Realtime changes across tables to sync mobile <-> PC live
+ */
+export function subscribeToRealtimeSync(onDataChange: () => void): () => void {
+  const client = getSupabaseClient();
+  if (!client) return () => {};
+
+  try {
+    const channel = client
+      .channel('vyapar-realtime-sync')
+      .on('postgres_changes', { event: '*', schema: 'public' }, () => {
+        pullFromSupabaseToIndexedDB()
+          .then(() => onDataChange())
+          .catch(() => {});
+      })
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
+  } catch (err) {
+    console.warn('Realtime subscription error:', err);
+    return () => {};
+  }
 }
