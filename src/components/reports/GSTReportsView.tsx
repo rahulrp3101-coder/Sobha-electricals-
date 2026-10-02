@@ -253,7 +253,7 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
               title="Download CA Excel/CSV Summary containing GSTR-1, GSTR-2 ITC, Expenses, and Net Tax"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
-              <span>CA Summary (Excel/CSV)</span>
+              <span>Export GST Summary (Excel)</span>
             </button>
 
             <button

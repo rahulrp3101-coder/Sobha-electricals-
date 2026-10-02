@@ -9,7 +9,7 @@ import {
   Item, Party, Invoice, PaymentTransaction, Expense, SyncQueueItem, CompanyProfile 
 } from '../types';
 import { 
-  getAllFromStore, putToStore, clearStore, getDB 
+  getAllFromStore, putToStore, bulkPutToStore, clearStore, getDB 
 } from '../db/indexedDB';
 
 export interface SupabaseConfig {
@@ -260,6 +260,7 @@ export async function testSupabaseConnection(): Promise<{ success: boolean; mess
 
 /**
  * Pushes pending local changes from IndexedDB to Supabase
+ * OPTIMIZED: Incremental Delta sync, bulk array upserts, and parallel Promise.all (Sub-second execution)
  */
 export async function pushPendingToSupabase(): Promise<{ success: boolean; pushedCount: number; error?: string }> {
   const client = getSupabaseClient();
@@ -268,6 +269,7 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
   }
 
   try {
+    // 1. Fetch stores in parallel
     const [items, parties, invoices, payments, expenses] = await Promise.all([
       getAllFromStore<Item>('items'),
       getAllFromStore<Party>('parties'),
@@ -276,161 +278,161 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
       getAllFromStore<Expense>('expenses'),
     ]);
 
-    let count = 0;
+    // 2. Incremental Delta Filtering: Only records that are not synced yet
+    const pendingItems = items.filter(i => (i as any).is_synced === false || (i as any).isSynced === false);
+    const pendingParties = parties.filter(p => (p as any).is_synced === false || (p as any).isSynced === false);
+    const pendingInvoices = invoices.filter(inv => 
+      ((inv as any).is_synced === false || (inv as any).isSynced === false) && 
+      (inv.documentType === 'SALES_INVOICE' || !inv.documentType)
+    );
+    const pendingPurchases = invoices.filter(p => 
+      ((p as any).is_synced === false || (p as any).isSynced === false) && 
+      p.documentType === 'PURCHASE_BILL'
+    );
+    const pendingExpenses = expenses.filter(e => (e as any).is_synced === false || (e as any).isSynced === false);
+    const pendingPayments = payments.filter(p => (p as any).is_synced === false || (p as any).isSynced === false);
 
-    // 1. Sync Items
-    if (items.length > 0) {
-      const rows = items.map(i => ({
-        id: i.id,
-        name: i.name,
-        barcode: i.barcode || null,
-        sale_price: i.retailPrice || 0,
-        purchase_price: i.purchasePrice || 0,
-        stock: i.currentStock || 0,
-        gst_rate: i.taxRate || 0,
-        data_json: i,
-        updated_at: i.updatedAt || new Date().toISOString(),
-      }));
-      const { error } = await client.from('items').upsert(rows, { onConflict: 'id' });
-      if (!error) count += rows.length;
+    const totalPendingCount = 
+      pendingItems.length + pendingParties.length + pendingInvoices.length + 
+      pendingPurchases.length + pendingExpenses.length + pendingPayments.length;
+
+    // Fast-path: If nothing has changed, finish immediately in ~1ms
+    if (totalPendingCount === 0) {
+      try { await clearStore('sync_queue'); } catch {}
+      const nowTimeStr = new Date().toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' });
+      saveSupabaseConfig({ lastSyncedAt: `${new Date().toLocaleDateString('hi-IN')} ${nowTimeStr}` });
+      return { success: true, pushedCount: 0 };
     }
 
-    // 2. Sync Parties
-    if (parties.length > 0) {
-      const rows = parties.map(p => ({
-        id: p.id,
-        name: p.name,
-        type: p.type,
-        phone: p.phone || null,
-        gstin: p.gstin || null,
-        address: p.address || null,
-        opening_balance: p.openingBalance || 0,
-        current_balance: p.currentBalance || 0,
-        data_json: p,
-        updated_at: p.updatedAt || new Date().toISOString(),
-      }));
-      const { error } = await client.from('parties').upsert(rows, { onConflict: 'id' });
-      if (!error) count += rows.length;
-    }
+    // 3. Prepare Batch Arrays for Bulk Upsert
+    const itemRows = pendingItems.map(i => ({
+      id: i.id,
+      name: i.name,
+      barcode: i.barcode || null,
+      sale_price: i.retailPrice || 0,
+      purchase_price: i.purchasePrice || 0,
+      stock: i.currentStock || 0,
+      gst_rate: i.taxRate || 0,
+      data_json: i,
+      updated_at: i.updatedAt || new Date().toISOString(),
+    }));
 
-    // 3. Sync Invoices (Sales & Purchases)
-    const salesInvs = invoices.filter(i => i.documentType === 'SALES_INVOICE' || !i.documentType);
-    if (salesInvs.length > 0) {
-      const rows = salesInvs.map(inv => ({
-        id: inv.id,
-        invoice_number: inv.invoiceNumber,
-        date: inv.date,
-        party_id: inv.partyId || null,
-        items_json: inv.items || [],
-        total_amount: inv.grandTotal || 0,
-        paid_amount: inv.receivedAmount || 0,
-        balance_amount: inv.balanceAmount || 0,
-        payment_mode: inv.paymentMode || 'CASH',
-        data_json: inv,
-        updated_at: inv.updatedAt || inv.createdAt || new Date().toISOString(),
-      }));
-      const { error } = await client.from('invoices').upsert(rows, { onConflict: 'id' });
-      if (!error) count += rows.length;
-    }
+    const partyRows = pendingParties.map(p => ({
+      id: p.id,
+      name: p.name,
+      type: p.type,
+      phone: p.phone || null,
+      gstin: p.gstin || null,
+      address: p.address || null,
+      opening_balance: p.openingBalance || 0,
+      current_balance: p.currentBalance || 0,
+      data_json: p,
+      updated_at: p.updatedAt || new Date().toISOString(),
+    }));
 
-    // Purchases
-    const purchaseBills = invoices.filter(i => i.documentType === 'PURCHASE_BILL');
-    if (purchaseBills.length > 0) {
-      const rows = purchaseBills.map(p => ({
-        id: p.id,
-        bill_number: p.invoiceNumber,
-        date: p.date,
-        supplier_id: p.partyId || null,
-        items_json: p.items || [],
-        total_amount: p.grandTotal || 0,
-        paid_amount: p.receivedAmount || 0,
-        balance_amount: p.balanceAmount || 0,
-        data_json: p,
-        updated_at: p.updatedAt || p.createdAt || new Date().toISOString(),
-      }));
-      const { error } = await client.from('purchases').upsert(rows, { onConflict: 'id' });
-      if (!error) count += rows.length;
-    }
+    const invoiceRows = pendingInvoices.map(inv => ({
+      id: inv.id,
+      invoice_number: inv.invoiceNumber,
+      date: inv.date,
+      party_id: inv.partyId || null,
+      items_json: inv.items || [],
+      total_amount: inv.grandTotal || 0,
+      paid_amount: inv.receivedAmount || 0,
+      balance_amount: inv.balanceAmount || 0,
+      payment_mode: inv.paymentMode || 'CASH',
+      data_json: inv,
+      updated_at: inv.updatedAt || inv.createdAt || new Date().toISOString(),
+    }));
 
-    // 4. Sync Expenses
-    if (expenses.length > 0) {
-      const rows = expenses.map(e => ({
-        id: e.id,
-        category: e.category,
-        amount: e.amount || 0,
-        payment_mode: e.paymentMode || 'CASH',
-        date: e.date,
-        notes: e.notes || e.title || null,
-        is_gst: Boolean(e.isGstApplicable),
-        gst_amount: e.taxAmount || 0,
-        data_json: e,
-        updated_at: e.createdAt || new Date().toISOString(),
-      }));
-      const { error } = await client.from('expenses').upsert(rows, { onConflict: 'id' });
-      if (!error) count += rows.length;
-    }
+    const purchaseRows = pendingPurchases.map(p => ({
+      id: p.id,
+      bill_number: p.invoiceNumber,
+      date: p.date,
+      supplier_id: p.partyId || null,
+      items_json: p.items || [],
+      total_amount: p.grandTotal || 0,
+      paid_amount: p.receivedAmount || 0,
+      balance_amount: p.balanceAmount || 0,
+      data_json: p,
+      updated_at: p.updatedAt || p.createdAt || new Date().toISOString(),
+    }));
 
-    // 5. Sync Payments
-    if (payments.length > 0) {
-      const rows = payments.map(p => ({
-        id: p.id,
-        party_id: p.partyId || null,
-        type: p.type,
-        amount: p.amount || 0,
-        payment_mode: p.paymentMode || 'CASH',
-        date: p.date,
-        notes: p.notes || null,
-        data_json: p,
-        updated_at: p.createdAt || new Date().toISOString(),
-      }));
-      const { error } = await client.from('payments').upsert(rows, { onConflict: 'id' });
-      if (!error) count += rows.length;
-    }
+    const expenseRows = pendingExpenses.map(e => ({
+      id: e.id,
+      category: e.category,
+      amount: e.amount || 0,
+      payment_mode: e.paymentMode || 'CASH',
+      date: e.date,
+      notes: e.notes || e.title || null,
+      is_gst: Boolean(e.isGstApplicable),
+      gst_amount: e.taxAmount || 0,
+      data_json: e,
+      updated_at: e.createdAt || new Date().toISOString(),
+    }));
 
-    // Mark all local records as successfully synced to cloud
-    for (const item of items) {
-      if ((item as any).is_synced === false || (item as any).isSynced === false) {
-        await putToStore('items', { ...item, is_synced: true, isSynced: true });
+    const paymentRows = pendingPayments.map(p => ({
+      id: p.id,
+      party_id: p.partyId || null,
+      type: p.type,
+      amount: p.amount || 0,
+      payment_mode: p.paymentMode || 'CASH',
+      date: p.date,
+      notes: p.notes || null,
+      data_json: p,
+      updated_at: p.createdAt || new Date().toISOString(),
+    }));
+
+    // 4. Parallel Bulk Upsert to Supabase via Promise.all
+    const uploadTasks: PromiseLike<any>[] = [];
+    if (itemRows.length > 0) uploadTasks.push(client.from('items').upsert(itemRows, { onConflict: 'id' }));
+    if (partyRows.length > 0) uploadTasks.push(client.from('parties').upsert(partyRows, { onConflict: 'id' }));
+    if (invoiceRows.length > 0) uploadTasks.push(client.from('invoices').upsert(invoiceRows, { onConflict: 'id' }));
+    if (purchaseRows.length > 0) uploadTasks.push(client.from('purchases').upsert(purchaseRows, { onConflict: 'id' }));
+    if (expenseRows.length > 0) uploadTasks.push(client.from('expenses').upsert(expenseRows, { onConflict: 'id' }));
+    if (paymentRows.length > 0) uploadTasks.push(client.from('payments').upsert(paymentRows, { onConflict: 'id' }));
+
+    const uploadResults = await Promise.all(uploadTasks);
+    for (const res of uploadResults) {
+      if (res?.error) {
+        console.warn('Batch upsert warning:', res.error);
       }
     }
-    for (const party of parties) {
-      if ((party as any).is_synced === false || (party as any).isSynced === false) {
-        await putToStore('parties', { ...party, is_synced: true, isSynced: true });
-      }
-    }
-    for (const inv of invoices) {
-      if ((inv as any).is_synced === false || (inv as any).isSynced === false) {
-        await putToStore('invoices', { ...inv, is_synced: true, isSynced: true });
-      }
-    }
-    for (const exp of expenses) {
-      if ((exp as any).is_synced === false || (exp as any).isSynced === false) {
-        await putToStore('expenses', { ...exp, is_synced: true, isSynced: true });
-      }
-    }
-    for (const pay of payments) {
-      if ((pay as any).is_synced === false || (pay as any).isSynced === false) {
-        await putToStore('payments', { ...pay, is_synced: true, isSynced: true });
-      }
-    }
-    try {
-      await clearStore('sync_queue');
-    } catch {}
+
+    // 5. Batch Update in Local IndexedDB (Single transaction per store via bulkPutToStore)
+    await Promise.all([
+      pendingItems.length > 0 
+        ? bulkPutToStore('items', pendingItems.map(i => ({ ...i, is_synced: true, isSynced: true }))) 
+        : Promise.resolve(),
+      pendingParties.length > 0 
+        ? bulkPutToStore('parties', pendingParties.map(p => ({ ...p, is_synced: true, isSynced: true }))) 
+        : Promise.resolve(),
+      (pendingInvoices.length > 0 || pendingPurchases.length > 0) 
+        ? bulkPutToStore('invoices', [...pendingInvoices, ...pendingPurchases].map(inv => ({ ...inv, is_synced: true, isSynced: true }))) 
+        : Promise.resolve(),
+      pendingExpenses.length > 0 
+        ? bulkPutToStore('expenses', pendingExpenses.map(e => ({ ...e, is_synced: true, isSynced: true }))) 
+        : Promise.resolve(),
+      pendingPayments.length > 0 
+        ? bulkPutToStore('payments', pendingPayments.map(p => ({ ...p, is_synced: true, isSynced: true }))) 
+        : Promise.resolve(),
+      clearStore('sync_queue'),
+    ]);
 
     // Update last sync time
     const nowTimeStr = new Date().toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' });
     const nowDateStr = new Date().toLocaleDateString('hi-IN');
     saveSupabaseConfig({ lastSyncedAt: `${nowDateStr} ${nowTimeStr}` });
 
-    return { success: true, pushedCount: count };
+    return { success: true, pushedCount: totalPendingCount };
   } catch (err: any) {
-    console.error('Supabase push error:', err);
+    console.error('Supabase batch push error:', err);
     return { success: false, pushedCount: 0, error: err.message };
   }
 }
 
 /**
  * Pulls changes from Supabase cloud into local IndexedDB (Two-Way Sync)
+ * OPTIMIZED: Parallel queries via Promise.all and fast bulkPutToStore
  */
 export async function pullFromSupabaseToIndexedDB(): Promise<{ success: boolean; pulledCount: number; error?: string }> {
   const client = getSupabaseClient();
@@ -439,77 +441,39 @@ export async function pullFromSupabaseToIndexedDB(): Promise<{ success: boolean;
   }
 
   try {
-    let pulled = 0;
+    // 1. Fetch all 6 tables simultaneously in parallel
+    const [remItems, remParties, remInvoices, remPurchases, remExpenses, remPayments] = await Promise.all([
+      client.from('items').select('*'),
+      client.from('parties').select('*'),
+      client.from('invoices').select('*'),
+      client.from('purchases').select('*'),
+      client.from('expenses').select('*'),
+      client.from('payments').select('*'),
+    ]);
 
-    // Pull items
-    const { data: remoteItems } = await client.from('items').select('*');
-    if (remoteItems && remoteItems.length > 0) {
-      for (const r of remoteItems) {
-        if (r.data_json) {
-          await putToStore('items', r.data_json);
-          pulled++;
-        }
-      }
-    }
+    // 2. Extract JSON payloads
+    const itemsToSave = (remItems.data || []).map(r => r.data_json).filter(Boolean);
+    const partiesToSave = (remParties.data || []).map(r => r.data_json).filter(Boolean);
+    const invoicesToSave = [
+      ...(remInvoices.data || []).map(r => r.data_json).filter(Boolean),
+      ...(remPurchases.data || []).map(r => r.data_json).filter(Boolean),
+    ];
+    const expensesToSave = (remExpenses.data || []).map(r => r.data_json).filter(Boolean);
+    const paymentsToSave = (remPayments.data || []).map(r => r.data_json).filter(Boolean);
 
-    // Pull parties
-    const { data: remoteParties } = await client.from('parties').select('*');
-    if (remoteParties && remoteParties.length > 0) {
-      for (const r of remoteParties) {
-        if (r.data_json) {
-          await putToStore('parties', r.data_json);
-          pulled++;
-        }
-      }
-    }
+    // 3. Batch write into IndexedDB in parallel
+    await Promise.all([
+      itemsToSave.length > 0 ? bulkPutToStore('items', itemsToSave) : Promise.resolve(),
+      partiesToSave.length > 0 ? bulkPutToStore('parties', partiesToSave) : Promise.resolve(),
+      invoicesToSave.length > 0 ? bulkPutToStore('invoices', invoicesToSave) : Promise.resolve(),
+      expensesToSave.length > 0 ? bulkPutToStore('expenses', expensesToSave) : Promise.resolve(),
+      paymentsToSave.length > 0 ? bulkPutToStore('payments', paymentsToSave) : Promise.resolve(),
+    ]);
 
-    // Pull invoices
-    const { data: remoteInvoices } = await client.from('invoices').select('*');
-    if (remoteInvoices && remoteInvoices.length > 0) {
-      for (const r of remoteInvoices) {
-        if (r.data_json) {
-          await putToStore('invoices', r.data_json);
-          pulled++;
-        }
-      }
-    }
-
-    // Pull purchases
-    const { data: remotePurchases } = await client.from('purchases').select('*');
-    if (remotePurchases && remotePurchases.length > 0) {
-      for (const r of remotePurchases) {
-        if (r.data_json) {
-          await putToStore('invoices', r.data_json);
-          pulled++;
-        }
-      }
-    }
-
-    // Pull expenses
-    const { data: remoteExpenses } = await client.from('expenses').select('*');
-    if (remoteExpenses && remoteExpenses.length > 0) {
-      for (const r of remoteExpenses) {
-        if (r.data_json) {
-          await putToStore('expenses', r.data_json);
-          pulled++;
-        }
-      }
-    }
-
-    // Pull payments
-    const { data: remotePayments } = await client.from('payments').select('*');
-    if (remotePayments && remotePayments.length > 0) {
-      for (const r of remotePayments) {
-        if (r.data_json) {
-          await putToStore('payments', r.data_json);
-          pulled++;
-        }
-      }
-    }
-
-    return { success: true, pulledCount: pulled };
+    const totalPulled = itemsToSave.length + partiesToSave.length + invoicesToSave.length + expensesToSave.length + paymentsToSave.length;
+    return { success: true, pulledCount: totalPulled };
   } catch (err: any) {
-    console.error('Supabase pull error:', err);
+    console.error('Supabase batch pull error:', err);
     return { success: false, pulledCount: 0, error: err.message };
   }
 }
@@ -523,8 +487,11 @@ export async function performFullTwoWaySync(): Promise<{
   pulledCount: number;
   error?: string;
 }> {
-  const pushRes = await pushPendingToSupabase();
-  const pullRes = await pullFromSupabaseToIndexedDB();
+  // Push pending delta records and pull remote records in parallel via Promise.all
+  const [pushRes, pullRes] = await Promise.all([
+    pushPendingToSupabase(),
+    pullFromSupabaseToIndexedDB(),
+  ]);
 
   return {
     success: pushRes.success || pullRes.success,

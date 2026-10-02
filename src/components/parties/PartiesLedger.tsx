@@ -558,27 +558,27 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
           {/* Statement Actions */}
           <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
             {/* If Customer: Dynamic UPI QR button for instant dues settlement */}
-            {!isSupplier && (
-              <button
-                type="button"
-                onClick={handleOpenInstantUpiQr}
-                className="flex items-center gap-1.5 px-3 py-2 bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-300 rounded-xl text-xs font-bold transition active:scale-95 shadow-2xs"
-                title="Generate Dynamic UPI QR for instant payment"
-              >
-                <QrCode className="w-4 h-4 text-blue-600" />
-                <span>📱 UPI QR Code (तुरंत QR से पेमेंट लें)</span>
-              </button>
-            )}
-
-            {/* Record Payment Button */}
             {!isSupplier ? (
-              <button
-                onClick={() => openPaymentInForParty(activeParty.id)}
-                className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs active:scale-95"
-              >
-                <ArrowDownLeft className="w-4 h-4 stroke-[2.5]" />
-                <span>+ Payment In (पैसे जमा करें)</span>
-              </button>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleOpenInstantUpiQr}
+                  className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition shadow-xs active:scale-95"
+                  title="Generate Dynamic UPI QR for instant customer payment"
+                >
+                  <QrCode className="w-4 h-4 text-white" />
+                  <span>Payment In (पैसे मिले - UPI QR)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openPaymentInForParty(activeParty.id)}
+                  className="flex items-center gap-1 px-2.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition border border-slate-200 active:scale-95"
+                  title="नकद या बैंक एंट्री दर्ज करें"
+                >
+                  <ArrowDownLeft className="w-3.5 h-3.5" />
+                  <span>Manual Entry (खाता जमा)</span>
+                </button>
+              </div>
             ) : (
               <button
                 onClick={() => setIsPaymentOutModalOpen(true)}
@@ -826,7 +826,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                                   title="Expand/Collapse item list"
                                 >
                                   <Eye className="w-3.5 h-3.5" />
-                                  <span>{isExpanded ? 'Hide' : 'Items'}</span>
+                                  <span>{isExpanded ? 'Hide Items' : 'View Items (सामान देखें)'}</span>
                                   <span className={`text-[10px] px-1 rounded-full ${
                                     isExpanded ? 'bg-blue-700 text-white' : 'bg-blue-100 text-blue-800'
                                   }`}>
@@ -1451,7 +1451,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                           title="View complete running ledger & statement"
                         >
                           <Eye className="w-3.5 h-3.5 stroke-[2.5]" />
-                          <span>👁️ खाता देखें (View Ledger)</span>
+                          <span>👁️ View Ledger (खाता देखें)</span>
                         </button>
 
                         {/* Payment In button for customers or Payment Out for suppliers */}
@@ -1558,7 +1558,7 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                     className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-xs"
                   >
                     <Eye className="w-3.5 h-3.5 stroke-[2.5]" />
-                    <span>👁️ खाता देखें (View Ledger)</span>
+                    <span>👁️ View Ledger (खाता देखें)</span>
                   </button>
 
                   {party.type === 'CUSTOMER' ? (

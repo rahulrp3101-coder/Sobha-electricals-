@@ -3,7 +3,7 @@ import {
   ShoppingBag, FileText, Package, Users, BarChart3, 
   Layers, Monitor, Smartphone, RefreshCw, Wifi, WifiOff, Download,
   Settings, ArrowDownLeft, Store, LogOut, ShieldCheck, Building2,
-  Wallet, Menu, X
+  Wallet, Menu, X, Check
 } from 'lucide-react';
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 import { CompanyProfile } from '../../types';
@@ -18,6 +18,7 @@ interface HeaderProps {
   isOnline: boolean;
   pendingSyncCount: number;
   isSyncing: boolean;
+  justSynced?: boolean;
   onTriggerSync: () => void;
   company?: CompanyProfile;
   onOpenPaymentIn?: () => void;
@@ -33,6 +34,7 @@ export const Header: React.FC<HeaderProps> = ({
   isOnline,
   pendingSyncCount,
   isSyncing,
+  justSynced = false,
   onTriggerSync,
   company,
   onOpenPaymentIn,
@@ -176,13 +178,15 @@ export const Header: React.FC<HeaderProps> = ({
           </button>
         )}
 
-        {/* Sync & Connectivity Status Indicator (Requirement 4) */}
+        {/* Sync & Connectivity Status Indicator (Optimized & Instant Feedback) */}
         <div className="flex items-center gap-1">
           <button
             onClick={onTriggerSync}
             disabled={isSyncing}
             className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold border transition shadow-2xs ${
-              isSyncing
+              justSynced
+                ? 'bg-emerald-600 text-white border-emerald-500 scale-102 ring-2 ring-emerald-300'
+                : isSyncing
                 ? 'bg-blue-50 text-blue-800 border-blue-300 ring-2 ring-blue-200'
                 : !isOnline
                 ? 'bg-amber-50 text-amber-900 border-amber-300'
@@ -192,7 +196,12 @@ export const Header: React.FC<HeaderProps> = ({
             }`}
             title="क्लाउड सिंक स्थिति (Manual Sync Now के लिए क्लिक करें)"
           >
-            {isSyncing ? (
+            {justSynced ? (
+              <>
+                <Check className="w-3.5 h-3.5 text-white stroke-[3] animate-in zoom-in-75 duration-200" />
+                <span className="text-white font-extrabold">🟢 Synced (सुरक्षित ✓)</span>
+              </>
+            ) : isSyncing ? (
               <>
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-blue-600 shrink-0" />
                 <span className="hidden xl:inline">🔵 सिंक हो रहा है... (Syncing...)</span>
@@ -236,11 +245,15 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               onClick={onTriggerSync}
               disabled={isSyncing}
-              className="hidden lg:flex items-center gap-1 px-2 py-1.5 text-xs font-semibold text-slate-600 hover:text-blue-700 hover:bg-blue-50 rounded-lg border border-slate-200 transition"
-              title="Manual Sync Now - अभी तुरंत क्लाउड सिंक चलाएं"
+              className={`hidden lg:flex items-center gap-1 px-2.5 py-1.5 text-xs font-bold rounded-lg border transition ${
+                justSynced
+                  ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                  : 'text-slate-700 hover:text-blue-700 hover:bg-blue-50 border-slate-200'
+              }`}
+              title="Manual Sync Now - तुरंत 1 सेकंड में क्लाउड सिंक पूरा करें"
             >
               <RefreshCw className={`w-3 h-3 text-slate-500 ${isSyncing ? 'animate-spin' : ''}`} />
-              <span className="text-[11px]">Sync Now</span>
+              <span className="text-[11px]">{justSynced ? '✓ Done' : 'Sync Now'}</span>
             </button>
           )}
         </div>

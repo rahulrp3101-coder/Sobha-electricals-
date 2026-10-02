@@ -161,6 +161,23 @@ export async function putToStore<T>(storeName: string, item: T): Promise<void> {
   });
 }
 
+/**
+ * Ultra-fast batch upsert in a single IndexedDB transaction
+ */
+export async function bulkPutToStore<T>(storeName: string, items: T[]): Promise<void> {
+  if (!items || items.length === 0) return;
+  const db = await getDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    for (const item of items) {
+      store.put(item);
+    }
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 export async function deleteFromStore(storeName: string, id: string): Promise<void> {
   const db = await getDB();
   return new Promise((resolve, reject) => {

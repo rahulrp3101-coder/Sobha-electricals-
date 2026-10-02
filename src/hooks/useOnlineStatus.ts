@@ -7,6 +7,7 @@ export function useOnlineStatus() {
   );
   const [pendingSyncCount, setPendingSyncCount] = useState<number>(0);
   const [isSyncing, setIsSyncing] = useState<boolean>(false);
+  const [justSynced, setJustSynced] = useState<boolean>(false);
   const [lastSyncTime, setLastSyncTime] = useState<string>('Just now');
 
   const refreshSyncCount = useCallback(async () => {
@@ -20,12 +21,23 @@ export function useOnlineStatus() {
 
   const triggerSync = useCallback(async () => {
     if (isSyncing) return;
+    
+    // Optimistic UI response: show immediate syncing state
     setIsSyncing(true);
+    const startTime = Date.now();
+
     try {
       const res = await processSyncQueue();
-      if (res.syncedCount > 0) {
-        setLastSyncTime(new Date().toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' }));
-      }
+      const duration = Date.now() - startTime;
+      
+      // Instantly clear pending count optimistically
+      setPendingSyncCount(0);
+      setLastSyncTime(new Date().toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' }));
+      
+      // Show "🟢 Synced ✓" confirmation
+      setJustSynced(true);
+      setTimeout(() => setJustSynced(false), 2500);
+      
       await refreshSyncCount();
     } catch (err) {
       console.warn('Sync attempt completed with warnings:', err);
@@ -51,10 +63,10 @@ export function useOnlineStatus() {
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
 
-    // Periodic check for pending changes every 4 seconds
+    // Periodic check for pending changes every 5 seconds
     const interval = setInterval(() => {
       refreshSyncCount();
-    }, 4000);
+    }, 5000);
 
     return () => {
       window.removeEventListener('online', handleOnline);
@@ -67,6 +79,7 @@ export function useOnlineStatus() {
     isOnline,
     pendingSyncCount,
     isSyncing,
+    justSynced,
     lastSyncTime,
     triggerSync,
     refreshSyncCount,

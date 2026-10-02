@@ -83,6 +83,7 @@ export default function App() {
     isOnline, 
     pendingSyncCount, 
     isSyncing, 
+    justSynced,
     triggerSync, 
     refreshSyncCount 
   } = useOnlineStatus();
@@ -390,6 +391,7 @@ export default function App() {
           isOnline={isOnline}
           pendingSyncCount={pendingSyncCount}
           isSyncing={isSyncing}
+          justSynced={justSynced}
           onTriggerSync={triggerSync}
           company={company}
           onOpenPaymentIn={() => setIsGlobalPaymentInOpen(true)}
@@ -425,6 +427,7 @@ export default function App() {
         isOnline={isOnline}
         pendingSyncCount={pendingSyncCount}
         isSyncing={isSyncing}
+        justSynced={justSynced}
         onTriggerSync={triggerSync}
         company={company}
         onOpenPaymentIn={() => setIsGlobalPaymentInOpen(true)}
@@ -432,8 +435,8 @@ export default function App() {
         onLogout={handleLogout}
       />
 
-      {/* Main Viewport Content (pb-20 so mobile bottom navigation bar never covers content) */}
-      <main className="flex-1 overflow-x-hidden pb-20 md:pb-6">
+      {/* Main Viewport Content - Locked to viewport for Zero-Page-Scroll POS Billing */}
+      <main className={`flex-1 ${activeTab === 'POS' ? 'h-[calc(100vh-4rem)] overflow-hidden pb-16 md:pb-0' : 'overflow-x-hidden pb-20 md:pb-6'}`}>
         {activeTab === 'POS' && (
           <VyaparPOSView
             items={items}
