@@ -10,7 +10,7 @@ import {
 } from './types';
 import { 
   getDB, getAllFromStore, putToStore, deleteFromStore, createInvoiceTransaction, 
-  recordPaymentTransaction, saveItemTransaction, savePartyTransaction, saveExpenseTransaction,
+  updateInvoiceTransaction, recordPaymentTransaction, saveItemTransaction, savePartyTransaction, saveExpenseTransaction,
   deleteInvoiceTransaction, deleteItemTransaction, deletePartyTransaction, togglePartyBlacklistTransaction
 } from './db/indexedDB';
 import { DEFAULT_COMPANY } from './db/defaultData';
@@ -315,10 +315,34 @@ export default function App() {
 
   // Handle Delete Invoice (Rollback inventory stock, reverse khata balance, remove from IndexedDB + Supabase)
   const handleDeleteInvoice = async (invoiceId: string) => {
+    const toDelete = invoices.find(inv => inv.id === invoiceId);
     // Optimistic UI update: disappear immediately
     setInvoices(prev => prev.filter(inv => inv.id !== invoiceId));
     await deleteInvoiceTransaction(invoiceId);
     await loadDatabaseData();
+    if (toDelete?.documentType === 'PURCHASE_BILL') {
+      syncMutation('purchases', { id: invoiceId }, 'DELETE').catch(() => {});
+    } else {
+      syncMutation('invoices', { id: invoiceId }, 'DELETE').catch(() => {});
+    }
+  };
+
+  // Handle Update Invoice / Purchase Bill (With stock and balance diffing)
+  const handleUpdateInvoice = async (updatedInvoice: Invoice, oldInvoice: Invoice): Promise<Invoice> => {
+    const updated = await updateInvoiceTransaction(updatedInvoice, oldInvoice);
+    await loadDatabaseData();
+
+    // Direct Supabase mutation sync
+    syncMutation(
+      updated.documentType === 'PURCHASE_BILL' ? 'purchases' : 'invoices',
+      updated,
+      'UPSERT'
+    ).catch(() => {});
+    if (updated.partyId) {
+      const party = parties.find(p => p.id === updated.partyId);
+      if (party) syncMutation('parties', party, 'UPSERT').catch(() => {});
+    }
+    return updated;
   };
 
   // Handle Delete Inventory Item (Remove from IndexedDB + Supabase)
@@ -519,6 +543,8 @@ export default function App() {
             payments={payments}
             company={company}
             onSaveInvoice={handleSaveInvoice}
+            onUpdateInvoice={handleUpdateInvoice}
+            onDeleteInvoice={handleDeleteInvoice}
             onSaveParty={handleSaveParty}
             onSaveItem={handleSaveItem}
             onRecordPayment={handleRecordPayment}

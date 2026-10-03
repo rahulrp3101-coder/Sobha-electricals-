@@ -304,6 +304,250 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
 }
 
 /**
+ * Updates an existing invoice / purchase bill with inventory stock and party khata balance adjustments.
+ * Accurately diffs old vs new line items and balances, applies changes in IndexedDB, and queues/syncs to Supabase.
+ */
+export async function updateInvoiceTransaction(
+  updatedInvoice: Invoice,
+  oldInvoice: Invoice
+): Promise<Invoice> {
+  const db = await getDB();
+
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(['invoices', 'items', 'parties', 'sync_queue'], 'readwrite');
+    const invStore = tx.objectStore('invoices');
+    const itemStore = tx.objectStore('items');
+    const partyStore = tx.objectStore('parties');
+    const queueStore = tx.objectStore('sync_queue');
+
+    const isOldSales = oldInvoice.documentType === 'SALES_INVOICE' || oldInvoice.documentType === 'DELIVERY_CHALLAN';
+    const isNewSales = updatedInvoice.documentType === 'SALES_INVOICE' || updatedInvoice.documentType === 'DELIVERY_CHALLAN';
+    const isOldPurchase = oldInvoice.documentType === 'PURCHASE_BILL';
+    const isNewPurchase = updatedInvoice.documentType === 'PURCHASE_BILL';
+    const isOldCreditNote = oldInvoice.documentType === 'CREDIT_NOTE';
+    const isNewCreditNote = updatedInvoice.documentType === 'CREDIT_NOTE';
+    const isOldDebitNote = oldInvoice.documentType === 'DEBIT_NOTE';
+    const isNewDebitNote = updatedInvoice.documentType === 'DEBIT_NOTE';
+
+    // 1. Calculate stock deltas for items:
+    // For purchase bill: old added stock (+), so rollback is (-oldQty); new adds stock (+newQty).
+    // For sales invoice: old deducted stock (-), so rollback is (+oldQty); new deducts stock (-newQty).
+    const stockDeltas = new Map<string, number>();
+
+    // Rollback old invoice items
+    if (oldInvoice.items && Array.isArray(oldInvoice.items)) {
+      for (const line of oldInvoice.items) {
+        if (isOldPurchase || isOldCreditNote) {
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) - line.quantity);
+        } else if (isOldSales || isOldDebitNote) {
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) + line.quantity);
+        }
+      }
+    }
+
+    // Apply new invoice items
+    if (updatedInvoice.items && Array.isArray(updatedInvoice.items)) {
+      for (const line of updatedInvoice.items) {
+        if (isNewPurchase || isNewCreditNote) {
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) + line.quantity);
+        } else if (isNewSales || isNewDebitNote) {
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) - line.quantity);
+        }
+      }
+    }
+
+    // Apply stock deltas to itemStore
+    for (const [itemId, delta] of stockDeltas.entries()) {
+      if (delta === 0) continue;
+      const itemReq = itemStore.get(itemId);
+      itemReq.onsuccess = () => {
+        const item = itemReq.result as Item;
+        if (item) {
+          if (delta > 0) {
+            item.currentStock += delta;
+          } else {
+            item.currentStock = Math.max(0, item.currentStock + delta);
+          }
+          item.updatedAt = new Date().toISOString();
+          (item as any).is_synced = false;
+          (item as any).isSynced = false;
+          (item as any).sync_action = 'UPDATE';
+          itemStore.put(item);
+
+          queueStore.put({
+            id: 'sync-item-' + item.id + '-' + Date.now(),
+            entity: 'ITEM',
+            action: 'UPDATE',
+            payload: item,
+            timestamp: Date.now(),
+            attempts: 0,
+            is_synced: false,
+            sync_action: 'UPDATE',
+          });
+        }
+      };
+    }
+
+    // 2. Adjust party khata balance
+    const oldPartyId = oldInvoice.partyId;
+    const newPartyId = updatedInvoice.partyId;
+    const oldBal = oldInvoice.balanceAmount || 0;
+    const newBal = updatedInvoice.balanceAmount || 0;
+
+    if (isOldPurchase || isNewPurchase) {
+      // In purchase bills: balanceAmount represents debt payable to supplier (negative in currentBalance)
+      if (oldPartyId === newPartyId && oldPartyId) {
+        const deltaBal = newBal - oldBal;
+        if (deltaBal !== 0) {
+          const pReq = partyStore.get(oldPartyId);
+          pReq.onsuccess = () => {
+            const party = pReq.result as Party;
+            if (party) {
+              party.currentBalance -= deltaBal; // Higher debt -> more negative
+              party.updatedAt = new Date().toISOString();
+              (party as any).is_synced = false;
+              (party as any).isSynced = false;
+              (party as any).sync_action = 'UPDATE';
+              partyStore.put(party);
+
+              queueStore.put({
+                id: 'sync-party-' + party.id + '-' + Date.now(),
+                entity: 'PARTY',
+                action: 'UPDATE',
+                payload: party,
+                timestamp: Date.now(),
+                attempts: 0,
+                is_synced: false,
+                sync_action: 'UPDATE',
+              });
+            }
+          };
+        }
+      } else {
+        // Party changed: rollback old supplier, apply new supplier
+        if (oldPartyId && oldBal > 0) {
+          const oldPReq = partyStore.get(oldPartyId);
+          oldPReq.onsuccess = () => {
+            const party = oldPReq.result as Party;
+            if (party) {
+              party.currentBalance += oldBal;
+              party.updatedAt = new Date().toISOString();
+              (party as any).is_synced = false;
+              (party as any).isSynced = false;
+              (party as any).sync_action = 'UPDATE';
+              partyStore.put(party);
+
+              queueStore.put({
+                id: 'sync-party-' + party.id + '-' + Date.now(),
+                entity: 'PARTY',
+                action: 'UPDATE',
+                payload: party,
+                timestamp: Date.now(),
+                attempts: 0,
+                is_synced: false,
+                sync_action: 'UPDATE',
+              });
+            }
+          };
+        }
+        if (newPartyId && newBal > 0) {
+          const newPReq = partyStore.get(newPartyId);
+          newPReq.onsuccess = () => {
+            const party = newPReq.result as Party;
+            if (party) {
+              party.currentBalance -= newBal;
+              party.updatedAt = new Date().toISOString();
+              (party as any).is_synced = false;
+              (party as any).isSynced = false;
+              (party as any).sync_action = 'UPDATE';
+              partyStore.put(party);
+
+              queueStore.put({
+                id: 'sync-party-' + party.id + '-' + Date.now(),
+                entity: 'PARTY',
+                action: 'UPDATE',
+                payload: party,
+                timestamp: Date.now(),
+                attempts: 0,
+                is_synced: false,
+                sync_action: 'UPDATE',
+              });
+            }
+          };
+        }
+      }
+    } else if (isOldSales || isNewSales) {
+      if (oldPartyId === newPartyId && oldPartyId) {
+        const deltaBal = newBal - oldBal;
+        if (deltaBal !== 0) {
+          const pReq = partyStore.get(oldPartyId);
+          pReq.onsuccess = () => {
+            const party = pReq.result as Party;
+            if (party) {
+              party.currentBalance += deltaBal;
+              party.updatedAt = new Date().toISOString();
+              (party as any).is_synced = false;
+              (party as any).isSynced = false;
+              (party as any).sync_action = 'UPDATE';
+              partyStore.put(party);
+
+              queueStore.put({
+                id: 'sync-party-' + party.id + '-' + Date.now(),
+                entity: 'PARTY',
+                action: 'UPDATE',
+                payload: party,
+                timestamp: Date.now(),
+                attempts: 0,
+                is_synced: false,
+                sync_action: 'UPDATE',
+              });
+            }
+          };
+        }
+      }
+    }
+
+    // 3. Save updated invoice record
+    (updatedInvoice as any).is_synced = false;
+    (updatedInvoice as any).isSynced = false;
+    (updatedInvoice as any).sync_action = 'UPDATE';
+    updatedInvoice.updatedAt = new Date().toISOString();
+    invStore.put(updatedInvoice);
+
+    // 4. Register in sync_queue
+    const queueItem: SyncQueueItem = {
+      id: 'sync-inv-' + updatedInvoice.id + '-' + Date.now(),
+      entity: updatedInvoice.documentType === 'PURCHASE_BILL' ? 'PURCHASE' : 'INVOICE',
+      action: 'UPDATE',
+      payload: updatedInvoice,
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'UPDATE',
+    };
+    queueStore.put(queueItem);
+
+    tx.oncomplete = () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        import('../services/supabaseService')
+          .then(({ syncMutation, pushPendingToSupabase }) => {
+            syncMutation(
+              updatedInvoice.documentType === 'PURCHASE_BILL' ? 'purchases' : 'invoices',
+              updatedInvoice,
+              'UPSERT'
+            ).catch(() => {});
+            pushPendingToSupabase().catch(() => {});
+          })
+          .catch(() => {});
+      }
+      resolve(updatedInvoice);
+    };
+
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
  * Record a khata payment (Payment In from customer or Payment Out to supplier)
  */
 export async function recordPaymentTransaction(payment: PaymentTransaction): Promise<void> {
@@ -533,6 +777,17 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
               (item as any).isSynced = false;
               (item as any).sync_action = 'UPDATE';
               itemStore.put(item);
+
+              queueStore.put({
+                id: 'sync-item-' + item.id + '-' + Date.now(),
+                entity: 'ITEM',
+                action: 'UPDATE',
+                payload: item,
+                timestamp: Date.now(),
+                attempts: 0,
+                is_synced: false,
+                sync_action: 'UPDATE',
+              });
             }
           };
         }
@@ -560,6 +815,17 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
             (party as any).isSynced = false;
             (party as any).sync_action = 'UPDATE';
             partyStore.put(party);
+
+            queueStore.put({
+              id: 'sync-party-' + party.id + '-' + Date.now(),
+              entity: 'PARTY',
+              action: 'UPDATE',
+              payload: party,
+              timestamp: Date.now(),
+              attempts: 0,
+              is_synced: false,
+              sync_action: 'UPDATE',
+            });
           }
         };
       }

@@ -18,6 +18,8 @@ interface PurchasesAndVendorsProps {
   payments: PaymentTransaction[];
   company: CompanyProfile;
   onSaveInvoice: (invoice: Invoice, printImmediate?: boolean, printFormat?: 'thermal' | 'a4') => Promise<Invoice>;
+  onUpdateInvoice?: (updatedInvoice: Invoice, oldInvoice: Invoice) => Promise<Invoice>;
+  onDeleteInvoice?: (invoiceId: string) => Promise<void>;
   onSaveParty: (party: Party) => Promise<void>;
   onSaveItem?: (item: Item) => Promise<void>;
   onRecordPayment: (payment: PaymentTransaction) => Promise<void>;
@@ -31,6 +33,8 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
   payments,
   company,
   onSaveInvoice,
+  onUpdateInvoice,
+  onDeleteInvoice,
   onSaveParty,
   onSaveItem,
   onRecordPayment,
@@ -100,6 +104,13 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
   const [newItemCategory, setNewItemCategory] = useState('General');
   const [newItemInitialStock, setNewItemInitialStock] = useState<number>(0);
   const [isSavingNewItem, setIsSavingNewItem] = useState(false);
+
+  // Edit Purchase Bill State (Requirement 2)
+  const [editingPurchaseInvoice, setEditingPurchaseInvoice] = useState<Invoice | null>(null);
+
+  // Delete Purchase Bill State (Requirement 3)
+  const [purchaseToDelete, setPurchaseToDelete] = useState<Invoice | null>(null);
+  const [isDeletingPurchase, setIsDeletingPurchase] = useState(false);
 
   // Edit Supplier Form State (Requirement 1)
   const [supplierToEdit, setSupplierToEdit] = useState<Party | null>(null);
@@ -171,7 +182,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
         retailPrice: sPrice,
         wholesalePrice: sPrice,
         taxRate: tax,
-        taxInclusive: true,
+        taxInclusive: false,
         hsn: newItemHsn.trim() || '19053100',
         unit: (newItemUnit.trim() || 'PCS') as any,
         currentStock: initStock,
@@ -275,25 +286,84 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     }
   };
 
-  // Add Item Line to Purchase Bill
+  // Helper to get selected supplier
+  const selectedSupplier = useMemo(() => {
+    return suppliers.find(s => s.id === selectedSupplierId);
+  }, [suppliers, selectedSupplierId]);
+
+  // Handle supplier selection change and recalculate existing lines' taxes
+  const handleSelectSupplier = (suppId: string) => {
+    setSelectedSupplierId(suppId);
+    const supp = suppliers.find(s => s.id === suppId);
+    const sellerStateCode = supp?.stateCode || company.stateCode || '27';
+    const buyerStateCode = company.stateCode || '27';
+
+    setPurchaseLines(prevLines =>
+      prevLines.map(line => {
+        const calc = calculateItemGST({
+          rate: line.unitPrice,
+          quantity: line.quantity,
+          discountPercent: 0,
+          taxRate: line.taxRate,
+          isTaxInclusive: false,
+          sellerStateCode,
+          buyerStateCode,
+        });
+        return {
+          ...line,
+          taxableAmount: calc.taxableAmount,
+          cgstAmount: calc.cgstAmount,
+          sgstAmount: calc.sgstAmount,
+          igstAmount: calc.igstAmount,
+          totalAmount: calc.totalAmount,
+        };
+      })
+    );
+  };
+
+  // Add Item Line to Purchase Bill (Tax Exclusive: Price + GST)
   const handleAddPurchaseLine = (item: Item) => {
-    const existing = purchaseLines.find(l => l.itemId === item.id);
-    if (existing) {
-      setPurchaseLines(purchaseLines.map(l => 
-        l.itemId === item.id ? { ...l, quantity: l.quantity + 1, totalAmount: (l.quantity + 1) * l.unitPrice } : l
-      ));
+    const existingIndex = purchaseLines.findIndex(l => l.itemId === item.id);
+    const price = item.purchasePrice || item.retailPrice || 100;
+    const taxRate = item.taxRate !== undefined ? item.taxRate : 18;
+    const sellerStateCode = selectedSupplier?.stateCode || company.stateCode || '27';
+    const buyerStateCode = company.stateCode || '27';
+
+    if (existingIndex >= 0) {
+      const existing = purchaseLines[existingIndex];
+      const newQty = existing.quantity + 1;
+      const calc = calculateItemGST({
+        rate: existing.unitPrice,
+        quantity: newQty,
+        discountPercent: 0,
+        taxRate: existing.taxRate,
+        isTaxInclusive: false, // Tax Exclusive
+        sellerStateCode,
+        buyerStateCode,
+      });
+
+      const updatedLines = [...purchaseLines];
+      updatedLines[existingIndex] = {
+        ...existing,
+        quantity: newQty,
+        taxableAmount: calc.taxableAmount,
+        cgstAmount: calc.cgstAmount,
+        sgstAmount: calc.sgstAmount,
+        igstAmount: calc.igstAmount,
+        totalAmount: calc.totalAmount,
+      };
+      setPurchaseLines(updatedLines);
       return;
     }
 
-    const price = item.purchasePrice || item.retailPrice || 100;
     const calc = calculateItemGST({
       rate: price,
       quantity: 1,
       discountPercent: 0,
-      taxRate: item.taxRate || 18,
-      isTaxInclusive: true,
-      sellerStateCode: company.stateCode,
-      buyerStateCode: company.stateCode,
+      taxRate: taxRate,
+      isTaxInclusive: false, // Tax Exclusive: Price + GST
+      sellerStateCode,
+      buyerStateCode,
     });
 
     const newLine: InvoiceItem = {
@@ -305,7 +375,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
       unitPrice: price,
       discountPercent: 0,
       discountAmount: 0,
-      taxRate: item.taxRate || 18,
+      taxRate: taxRate,
       taxableAmount: calc.taxableAmount,
       cgstAmount: calc.cgstAmount,
       sgstAmount: calc.sgstAmount,
@@ -317,28 +387,34 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     setPurchaseLines([...purchaseLines, newLine]);
   };
 
-  // Update Line Quantity / Price in Purchase Bill
-  const handleUpdatePurchaseLine = (index: number, qty: number, price: number) => {
+  // Update Line Quantity / Price / GST Rate in Purchase Bill (Tax Exclusive)
+  const handleUpdatePurchaseLine = (index: number, qty: number, price: number, taxRate?: number) => {
     if (qty <= 0) {
       setPurchaseLines(purchaseLines.filter((_, i) => i !== index));
       return;
     }
 
     const current = purchaseLines[index];
+    const rateVal = price >= 0 ? price : current.unitPrice;
+    const taxRateVal = taxRate !== undefined ? taxRate : (current.taxRate ?? 18);
+    const sellerStateCode = selectedSupplier?.stateCode || company.stateCode || '27';
+    const buyerStateCode = company.stateCode || '27';
+
     const calc = calculateItemGST({
-      rate: price,
+      rate: rateVal,
       quantity: qty,
       discountPercent: 0,
-      taxRate: current.taxRate,
-      isTaxInclusive: true,
-      sellerStateCode: company.stateCode,
-      buyerStateCode: company.stateCode,
+      taxRate: taxRateVal,
+      isTaxInclusive: false, // Tax Exclusive
+      sellerStateCode,
+      buyerStateCode,
     });
 
     const updated: InvoiceItem = {
       ...current,
       quantity: qty,
-      unitPrice: price,
+      unitPrice: rateVal,
+      taxRate: taxRateVal,
       taxableAmount: calc.taxableAmount,
       cgstAmount: calc.cgstAmount,
       sgstAmount: calc.sgstAmount,
@@ -351,12 +427,65 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     setPurchaseLines(newArr);
   };
 
+  // Open Edit Purchase Bill Modal (Requirement 2)
+  const handleOpenEditPurchase = (bill: Invoice) => {
+    setEditingPurchaseInvoice(bill);
+    setSelectedSupplierId(bill.partyId || '');
+    setSupplierBillNo(bill.invoiceNumber || '');
+    setBillDate(bill.date || new Date().toISOString().split('T')[0]);
+    const billSellerState = bill.partyStateCode || company.stateCode || '27';
+    const billBuyerState = company.stateCode || '27';
+
+    setPurchaseLines(
+      (bill.items || []).map(line => {
+        const calc = calculateItemGST({
+          rate: line.unitPrice,
+          quantity: line.quantity,
+          discountPercent: line.discountPercent || 0,
+          taxRate: line.taxRate ?? 18,
+          isTaxInclusive: false,
+          sellerStateCode: billSellerState,
+          buyerStateCode: billBuyerState,
+        });
+        return {
+          ...line,
+          taxRate: line.taxRate ?? 18,
+          taxableAmount: calc.taxableAmount,
+          cgstAmount: calc.cgstAmount,
+          sgstAmount: calc.sgstAmount,
+          igstAmount: calc.igstAmount,
+          totalAmount: calc.totalAmount,
+        };
+      })
+    );
+    setPurchasePaymentMode(bill.paymentMode || 'CREDIT');
+    setPurchaseNotes(bill.notes || '');
+    setIsNewPurchaseModalOpen(true);
+  };
+
+  // Confirm Delete Purchase Bill with Stock and Supplier Balance Rollback (Requirement 3)
+  const handleConfirmDeletePurchase = async () => {
+    if (!purchaseToDelete || !onDeleteInvoice) return;
+    setIsDeletingPurchase(true);
+    try {
+      const invNum = purchaseToDelete.invoiceNumber;
+      await onDeleteInvoice(purchaseToDelete.id);
+      showToast(`खरीद बिल #${invNum} सफलतापूर्वक डिलीट हो गया! स्टॉक व सप्लायर बैलेंस रोलबैक हो गए।`);
+      setPurchaseToDelete(null);
+    } catch (err: any) {
+      console.error('Failed to delete purchase invoice:', err);
+      showToast('खरीद बिल डिलीट करने में त्रुटि: ' + (err.message || 'Error'), true);
+    } finally {
+      setIsDeletingPurchase(false);
+    }
+  };
+
   // Calculate Purchase Bill Totals
   const purchaseTotals = useMemo(() => {
     return calculateInvoiceTotals(purchaseLines);
   }, [purchaseLines]);
 
-  // Submit Purchase Bill
+  // Submit or Update Purchase Bill
   const handleSavePurchaseBill = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!selectedSupplierId || purchaseLines.length === 0) {
@@ -372,41 +501,84 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
       const invNum = supplierBillNo.trim() || `PUR-${Date.now().toString().slice(-6)}`;
       const isPaid = purchasePaymentMode !== 'CREDIT';
 
-      const purchaseInvoice: Invoice = {
-        id: `pur-${Date.now()}`,
-        invoiceNumber: invNum,
-        documentType: 'PURCHASE_BILL',
-        partyId: supplier.id,
-        partyName: supplier.name,
-        partyGstin: supplier.gstin,
-        partyPhone: supplier.phone,
-        partyAddress: supplier.address,
-        partyState: supplier.state,
-        partyStateCode: supplier.stateCode,
-        date: billDate,
-        items: purchaseLines,
-        subTotal: purchaseTotals.subTotal,
-        totalDiscount: 0,
-        totalCgst: purchaseTotals.totalCgst,
-        totalSgst: purchaseTotals.totalSgst,
-        totalIgst: purchaseTotals.totalIgst,
-        totalCess: 0,
-        totalTax: purchaseTotals.totalTax,
-        roundOff: purchaseTotals.roundOff,
-        grandTotal: purchaseTotals.grandTotal,
-        receivedAmount: isPaid ? purchaseTotals.grandTotal : 0,
-        balanceAmount: isPaid ? 0 : purchaseTotals.grandTotal,
-        paymentMode: purchasePaymentMode,
-        status: isPaid ? 'PAID' : 'UNPAID',
-        notes: purchaseNotes.trim() || undefined,
-        isSynced: true,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      if (editingPurchaseInvoice) {
+        // Updating existing purchase bill (Requirement 2)
+        const updatedPurchaseInvoice: Invoice = {
+          ...editingPurchaseInvoice,
+          invoiceNumber: invNum,
+          partyId: supplier.id,
+          partyName: supplier.name,
+          partyGstin: supplier.gstin,
+          partyPhone: supplier.phone,
+          partyAddress: supplier.address,
+          partyState: supplier.state,
+          partyStateCode: supplier.stateCode,
+          date: billDate,
+          items: purchaseLines,
+          subTotal: purchaseTotals.subTotal,
+          totalDiscount: 0,
+          totalCgst: purchaseTotals.totalCgst,
+          totalSgst: purchaseTotals.totalSgst,
+          totalIgst: purchaseTotals.totalIgst,
+          totalCess: 0,
+          totalTax: purchaseTotals.totalTax,
+          roundOff: purchaseTotals.roundOff,
+          grandTotal: purchaseTotals.grandTotal,
+          receivedAmount: isPaid ? purchaseTotals.grandTotal : 0,
+          balanceAmount: isPaid ? 0 : purchaseTotals.grandTotal,
+          paymentMode: purchasePaymentMode,
+          status: isPaid ? 'PAID' : 'UNPAID',
+          notes: purchaseNotes.trim() || undefined,
+          updatedAt: new Date().toISOString(),
+        };
 
-      await onSaveInvoice(purchaseInvoice);
-      showToast(`Purchase bill saved! Stock has been incremented for ${purchaseLines.length} items.`);
+        if (onUpdateInvoice) {
+          await onUpdateInvoice(updatedPurchaseInvoice, editingPurchaseInvoice);
+        } else {
+          await onSaveInvoice(updatedPurchaseInvoice);
+        }
+
+        showToast(`खरीद बिल '${updatedPurchaseInvoice.invoiceNumber}' सफलतापूर्वक अपडेट हुआ! स्टॉक व सप्लायर बैलेंस एडजस्ट हो गया।`);
+      } else {
+        // Creating new purchase bill
+        const purchaseInvoice: Invoice = {
+          id: `pur-${Date.now()}`,
+          invoiceNumber: invNum,
+          documentType: 'PURCHASE_BILL',
+          partyId: supplier.id,
+          partyName: supplier.name,
+          partyGstin: supplier.gstin,
+          partyPhone: supplier.phone,
+          partyAddress: supplier.address,
+          partyState: supplier.state,
+          partyStateCode: supplier.stateCode,
+          date: billDate,
+          items: purchaseLines,
+          subTotal: purchaseTotals.subTotal,
+          totalDiscount: 0,
+          totalCgst: purchaseTotals.totalCgst,
+          totalSgst: purchaseTotals.totalSgst,
+          totalIgst: purchaseTotals.totalIgst,
+          totalCess: 0,
+          totalTax: purchaseTotals.totalTax,
+          roundOff: purchaseTotals.roundOff,
+          grandTotal: purchaseTotals.grandTotal,
+          receivedAmount: isPaid ? purchaseTotals.grandTotal : 0,
+          balanceAmount: isPaid ? 0 : purchaseTotals.grandTotal,
+          paymentMode: purchasePaymentMode,
+          status: isPaid ? 'PAID' : 'UNPAID',
+          notes: purchaseNotes.trim() || undefined,
+          isSynced: true,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        await onSaveInvoice(purchaseInvoice);
+        showToast(`खरीद बिल सेव हुआ! ${purchaseLines.length} सामान का स्टॉक बढ़ गया।`);
+      }
+
       setIsNewPurchaseModalOpen(false);
+      setEditingPurchaseInvoice(null);
       setPurchaseLines([]);
       setSelectedSupplierId('');
       setSupplierBillNo('');
@@ -749,6 +921,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                     <th className="p-3.5">Supplier (व्यापारी)</th>
                     <th className="p-3.5">Date (दिनांक)</th>
                     <th className="p-3.5">Items (सामान)</th>
+                    <th className="p-3.5">Taxable &amp; GST</th>
                     <th className="p-3.5">Payment (भुगतान)</th>
                     <th className="p-3.5 text-right">Amount (कुल राशि)</th>
                     <th className="p-3.5 text-center">Action</th>
@@ -767,8 +940,16 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                       <td className="p-3.5 text-slate-500 whitespace-nowrap">
                         {inv.date}
                       </td>
-                      <td className="p-3.5 text-slate-600">
-                        {inv.items.length} items
+                      <td className="p-3.5 text-slate-600 whitespace-nowrap">
+                        <span className="font-bold">{inv.items.length}</span> items
+                      </td>
+                      <td className="p-3.5 whitespace-nowrap">
+                        <div className="text-[11px] text-slate-600">
+                          Taxable: <span className="font-mono font-semibold">{formatINR(inv.subTotal || 0)}</span>
+                        </div>
+                        <div className="text-[10px] text-indigo-700 font-semibold">
+                          GST: <span className="font-mono">{formatINR(inv.totalTax || 0)}</span>
+                        </div>
                       </td>
                       <td className="p-3.5">
                         <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
@@ -782,17 +963,55 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                       <td className="p-3.5 text-right font-mono font-black text-slate-900 text-sm">
                         {formatINR(inv.grandTotal)}
                       </td>
-                      <td className="p-3.5 text-center">
-                        {onViewInvoice && (
+                      <td className="p-3.5 text-center whitespace-nowrap">
+                        <div className="flex items-center justify-center gap-1.5">
+                          {onViewInvoice && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                onViewInvoice(inv, 'a4');
+                              }}
+                              className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition"
+                              title="View / Print Bill"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+
+                          {/* ✏️ Edit Purchase Bill Button (Requirement 2) */}
                           <button
                             type="button"
-                            onClick={() => onViewInvoice(inv, 'a4')}
-                            className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition"
-                            title="View / Print Bill"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              handleOpenEditPurchase(inv);
+                            }}
+                            className="flex items-center gap-1 px-2.5 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg text-xs font-bold transition shadow-2xs active:scale-95 cursor-pointer"
+                            title="Edit Purchase Bill (बिल संपादित करें)"
                           >
-                            <Eye className="w-3.5 h-3.5" />
+                            <Edit className="w-3.5 h-3.5" />
+                            <span>Edit</span>
                           </button>
-                        )}
+
+                          {/* 🗑️ Delete Purchase Bill Button (Requirement 3) */}
+                          {onDeleteInvoice && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                e.preventDefault();
+                                setPurchaseToDelete(inv);
+                              }}
+                              className="flex items-center gap-1 px-2.5 py-1 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-bold transition shadow-2xs active:scale-95 cursor-pointer"
+                              title="Delete Purchase Bill & Rollback Stock (बिल हटाएं व स्टॉक रोलबैक करें)"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Delete</span>
+                            </button>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -1135,22 +1354,31 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
       )}
 
       {/* ------------------------------------------------------------- */}
-      {/* MODAL 2: ADD PURCHASE BILL */}
+      {/* MODAL 2: ADD / EDIT PURCHASE BILL */}
       {/* ------------------------------------------------------------- */}
       {isNewPurchaseModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-2xs p-3 sm:p-4">
-          <div className="w-full max-w-3xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="w-full max-w-4xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh]">
             <div className="p-4 bg-slate-900 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-blue-400" />
                 <h3 className="font-extrabold text-sm sm:text-base">
-                  + Add Purchase Bill (सप्लायर से खरीद दर्ज करें)
+                  {editingPurchaseInvoice 
+                    ? `✏️ Edit Purchase Bill #${editingPurchaseInvoice.invoiceNumber} (खरीद बिल संपादित करें)`
+                    : '+ Add Purchase Bill (सप्लायर से खरीद दर्ज करें)'}
                 </h3>
               </div>
               <button
                 type="button"
-                onClick={() => setIsNewPurchaseModalOpen(false)}
-                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center"
+                onClick={() => {
+                  setIsNewPurchaseModalOpen(false);
+                  setEditingPurchaseInvoice(null);
+                  setPurchaseLines([]);
+                  setSelectedSupplierId('');
+                  setSupplierBillNo('');
+                  setPurchaseNotes('');
+                }}
+                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -1166,7 +1394,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                   <select
                     required
                     value={selectedSupplierId}
-                    onChange={e => setSelectedSupplierId(e.target.value)}
+                    onChange={e => handleSelectSupplier(e.target.value)}
                     className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none"
                   >
                     <option value="">-- Choose Supplier --</option>
@@ -1208,7 +1436,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
               {/* Item Selector */}
               <div className="space-y-2">
                 <label className="block font-bold text-slate-700">
-                  Select Purchased Items (खरीदे गए सामान जोड़ें):
+                  Select Purchased Items (खरीदे गए सामान जोड़ें - Tax Exclusive):
                 </label>
                 <div className="flex items-center gap-2">
                   <div className="relative flex-1">
@@ -1257,7 +1485,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                             <span className="text-[10px] text-slate-400 ml-2">Stock: {item.currentStock} {item.unit}</span>
                           </div>
                           <span className="font-mono text-slate-700 font-bold">
-                            Purchase: {formatINR(item.purchasePrice || item.retailPrice)}
+                            Rate: {formatINR(item.purchasePrice || item.retailPrice)} (+{item.taxRate || 18}% GST)
                           </span>
                         </div>
                       ))}
@@ -1284,13 +1512,16 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                 )}
               </div>
 
-              {/* Purchase Lines Table */}
+              {/* Purchase Lines Table (Requirement 1: Tax Exclusive / Price + GST) */}
               <div className="border border-slate-200 rounded-2xl overflow-hidden">
-                <div className="bg-slate-100 px-3.5 py-2 font-bold text-[11px] text-slate-700 grid grid-cols-12 gap-2">
-                  <div className="col-span-5">Item Name</div>
-                  <div className="col-span-2 text-center">Qty</div>
-                  <div className="col-span-2 text-right">Rate (₹)</div>
-                  <div className="col-span-2 text-right">Total (₹)</div>
+                <div className="bg-slate-100 px-3.5 py-2.5 font-bold text-[11px] text-slate-700 grid grid-cols-12 gap-2">
+                  <div className="col-span-3">Item Name (सामान)</div>
+                  <div className="col-span-1 text-center">Qty</div>
+                  <div className="col-span-2 text-right">Rate (₹) [Excl]</div>
+                  <div className="col-span-2 text-center">GST %</div>
+                  <div className="col-span-1 text-right">Taxable (₹)</div>
+                  <div className="col-span-1 text-right">GST (₹)</div>
+                  <div className="col-span-1 text-right">Total (₹)</div>
                   <div className="col-span-1 text-center">✕</div>
                 </div>
 
@@ -1299,38 +1530,61 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                     No items added to bill yet. Search items above to add.
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-100 max-h-56 overflow-y-auto">
+                  <div className="divide-y divide-slate-100 max-h-60 overflow-y-auto">
                     {purchaseLines.map((line, idx) => (
-                      <div key={line.itemId} className="p-3 grid grid-cols-12 gap-2 items-center text-xs">
-                        <div className="col-span-5 font-bold text-slate-900 truncate">
-                          {line.itemName}
+                      <div key={line.itemId} className="p-2.5 grid grid-cols-12 gap-2 items-center text-xs">
+                        <div className="col-span-3 min-w-0">
+                          <div className="font-bold text-slate-900 truncate">{line.itemName}</div>
+                          {line.hsn && <div className="text-[10px] text-slate-400 font-mono">HSN: {line.hsn}</div>}
                         </div>
-                        <div className="col-span-2 flex items-center justify-center">
+                        <div className="col-span-1 flex items-center justify-center">
                           <input
                             type="number"
                             min="1"
                             value={line.quantity}
-                            onChange={e => handleUpdatePurchaseLine(idx, Number(e.target.value) || 1, line.unitPrice)}
-                            className="w-14 text-center bg-slate-50 border border-slate-300 rounded-lg py-1 font-mono font-bold"
+                            onChange={e => handleUpdatePurchaseLine(idx, Number(e.target.value) || 1, line.unitPrice, line.taxRate)}
+                            className="w-12 text-center bg-slate-50 border border-slate-300 rounded-lg py-1 font-mono font-bold"
                           />
                         </div>
                         <div className="col-span-2 flex items-center justify-end">
                           <input
                             type="number"
                             min="0"
+                            step="0.01"
                             value={line.unitPrice}
-                            onChange={e => handleUpdatePurchaseLine(idx, line.quantity, Number(e.target.value) || 0)}
-                            className="w-20 text-right bg-slate-50 border border-slate-300 rounded-lg py-1 px-1.5 font-mono font-bold"
+                            onChange={e => handleUpdatePurchaseLine(idx, line.quantity, Number(e.target.value) || 0, line.taxRate)}
+                            className="w-full text-right bg-slate-50 border border-slate-300 rounded-lg py-1 px-1.5 font-mono font-bold"
+                            title="Purchase Rate (Tax Exclusive)"
                           />
                         </div>
-                        <div className="col-span-2 text-right font-mono font-black text-slate-900">
+                        <div className="col-span-2 flex items-center justify-center">
+                          <select
+                            value={line.taxRate}
+                            onChange={e => handleUpdatePurchaseLine(idx, line.quantity, line.unitPrice, Number(e.target.value))}
+                            className="w-full bg-slate-50 border border-slate-300 rounded-lg py-1 px-1 text-[11px] font-bold text-slate-800"
+                          >
+                            <option value={0}>0%</option>
+                            <option value={5}>5%</option>
+                            <option value={12}>12%</option>
+                            <option value={18}>18%</option>
+                            <option value={28}>28%</option>
+                          </select>
+                        </div>
+                        <div className="col-span-1 text-right font-mono font-medium text-slate-700 text-[11px]">
+                          {formatINR(line.taxableAmount)}
+                        </div>
+                        <div className="col-span-1 text-right font-mono font-semibold text-indigo-700 text-[11px]">
+                          {formatINR(line.cgstAmount + line.sgstAmount + line.igstAmount)}
+                        </div>
+                        <div className="col-span-1 text-right font-mono font-black text-slate-900 text-[11px]">
                           {formatINR(line.totalAmount)}
                         </div>
                         <div className="col-span-1 text-center">
                           <button
                             type="button"
                             onClick={() => handleUpdatePurchaseLine(idx, 0, 0)}
-                            className="text-slate-400 hover:text-red-600"
+                            className="text-slate-400 hover:text-red-600 transition"
+                            title="Remove line"
                           >
                             <Trash2 className="w-3.5 h-3.5 mx-auto" />
                           </button>
@@ -1341,7 +1595,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                 )}
               </div>
 
-              {/* Summary & Payment Mode */}
+              {/* Summary & Payment Mode (Requirement 1: Taxable, CGST+SGST or IGST, and Grand Total distinct) */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
                 <div>
                   <label className="block font-bold text-slate-700 mb-1">
@@ -1357,22 +1611,54 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                     <option value="BANK_TRANSFER">💳 बैंक / ट्रांसफर (Bank Transfer)</option>
                     <option value="UPI">📱 UPI द्वारा भुगतान (Paid via UPI)</option>
                   </select>
-                  <p className="text-[10px] text-slate-400 mt-1">
+                  <p className="text-[10px] text-slate-500 mt-1 font-medium">
                     {purchasePaymentMode === 'CREDIT' 
-                      ? 'बकाया राशि सप्लायर के खाते में जुड़ जाएगी।' 
+                      ? 'बकाया राशि सप्लायर के खाते में जुड़ जाएगी (देना बाकी)।' 
                       : 'बिल का पूरा भुगतान तुरंत दर्ज होगा।'}
                   </p>
                 </div>
 
-                <div className="bg-slate-50 p-3.5 rounded-2xl border border-slate-200 space-y-1 text-right">
-                  <div className="text-slate-500 text-xs">
-                    Subtotal: <span className="font-mono">{formatINR(purchaseTotals.subTotal)}</span>
+                <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-1.5 text-right">
+                  <div className="flex justify-between items-center text-xs text-slate-600">
+                    <span className="font-semibold text-slate-700">Total Taxable Value (कुल कर योग्य मूल्य):</span>
+                    <span className="font-mono font-bold text-slate-900">{formatINR(purchaseTotals.subTotal)}</span>
                   </div>
-                  <div className="text-slate-500 text-xs">
-                    GST Tax: <span className="font-mono">{formatINR(purchaseTotals.totalTax)}</span>
+
+                  {purchaseTotals.totalIgst > 0 ? (
+                    <div className="flex justify-between items-center text-xs text-blue-700 bg-blue-50/60 px-2 py-1 rounded-lg">
+                      <span className="font-medium">Total IGST (Inter-State Tax):</span>
+                      <span className="font-mono font-bold">{formatINR(purchaseTotals.totalIgst)}</span>
+                    </div>
+                  ) : (
+                    <div className="space-y-1 bg-slate-100/60 p-2 rounded-xl">
+                      <div className="flex justify-between items-center text-xs text-slate-600">
+                        <span>Total CGST (Central Tax):</span>
+                        <span className="font-mono font-bold text-slate-800">{formatINR(purchaseTotals.totalCgst)}</span>
+                      </div>
+                      <div className="flex justify-between items-center text-xs text-slate-600">
+                        <span>Total SGST (State Tax):</span>
+                        <span className="font-mono font-bold text-slate-800">{formatINR(purchaseTotals.totalSgst)}</span>
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-center text-xs text-indigo-700 font-bold border-t border-slate-200 pt-1.5">
+                    <span>Total GST Amount (कुल टैक्स):</span>
+                    <span className="font-mono">{formatINR(purchaseTotals.totalTax)}</span>
                   </div>
-                  <div className="text-base font-black text-blue-700 pt-1 border-t border-slate-200">
-                    Grand Total: <span className="font-mono">{formatINR(purchaseTotals.grandTotal)}</span>
+
+                  {purchaseTotals.roundOff !== 0 && (
+                    <div className="flex justify-between items-center text-[11px] text-slate-500">
+                      <span>Round Off:</span>
+                      <span className="font-mono font-medium">
+                        {purchaseTotals.roundOff > 0 ? '+' : ''}{formatINR(purchaseTotals.roundOff)}
+                      </span>
+                    </div>
+                  )}
+
+                  <div className="flex justify-between items-center text-sm sm:text-base font-black text-blue-900 border-t-2 border-slate-300 pt-1.5">
+                    <span>Grand Total (Taxable + GST):</span>
+                    <span className="font-mono text-blue-700">{formatINR(purchaseTotals.grandTotal)}</span>
                   </div>
                 </div>
               </div>
@@ -1381,21 +1667,128 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
               <div className="pt-3 border-t border-slate-200 flex items-center justify-end gap-2">
                 <button
                   type="button"
-                  onClick={() => setIsNewPurchaseModalOpen(false)}
-                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold"
+                  onClick={() => {
+                    setIsNewPurchaseModalOpen(false);
+                    setEditingPurchaseInvoice(null);
+                    setPurchaseLines([]);
+                    setSelectedSupplierId('');
+                    setSupplierBillNo('');
+                    setPurchaseNotes('');
+                  }}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSavingPurchase || purchaseLines.length === 0}
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold shadow-md active:scale-95 flex items-center gap-1.5"
+                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl font-bold shadow-md active:scale-95 flex items-center gap-1.5 cursor-pointer"
                 >
                   <Check className="w-4 h-4 stroke-[3]" />
-                  <span>{isSavingPurchase ? 'Saving...' : 'Save Purchase Bill & Add Stock'}</span>
+                  <span>
+                    {isSavingPurchase 
+                      ? 'Saving...' 
+                      : editingPurchaseInvoice 
+                        ? 'Update Purchase Bill & Sync Stock' 
+                        : 'Save Purchase Bill & Add Stock'}
+                  </span>
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ------------------------------------------------------------- */}
+      {/* MODAL: DELETE PURCHASE BILL CONFIRMATION (Requirement 3) */}
+      {/* ------------------------------------------------------------- */}
+      {purchaseToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-2xs p-4">
+          <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-red-200 overflow-hidden flex flex-col">
+            <div className="p-4 bg-red-600 text-white flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-5 h-5 text-white" />
+                <h3 className="font-extrabold text-sm sm:text-base">
+                  Delete Purchase Bill? (खरीद बिल हटाएं?)
+                </h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setPurchaseToDelete(null)}
+                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <div className="bg-red-50 p-3.5 rounded-2xl border border-red-200 text-red-900 leading-relaxed">
+                <p className="font-bold text-sm text-red-700 mb-1">
+                  क्या आप खरीद बिल #{purchaseToDelete.invoiceNumber} डिलीट करना चाहते हैं?
+                </p>
+                <p className="text-xs text-red-800">
+                  इससे इन्वेंटरी स्टॉक और सप्लायर बैलेंस रोलबैक हो जाएगा।
+                </p>
+              </div>
+
+              {/* Breakdown of what will happen */}
+              <div className="space-y-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
+                <div className="font-bold text-slate-700 text-xs">
+                  रोलबैक विवरण (Rollback Details):
+                </div>
+
+                <div className="text-[11px] space-y-1.5">
+                  <div className="flex justify-between items-center text-slate-600">
+                    <span>सप्लायर (Supplier):</span>
+                    <span className="font-bold text-slate-900">{purchaseToDelete.partyName}</span>
+                  </div>
+
+                  <div className="flex justify-between items-center text-slate-600">
+                    <span>बिल की कुल राशि (Bill Total):</span>
+                    <span className="font-mono font-bold text-slate-900">{formatINR(purchaseToDelete.grandTotal)}</span>
+                  </div>
+
+                  {purchaseToDelete.balanceAmount > 0 && (
+                    <div className="flex justify-between items-center text-amber-800 font-bold bg-amber-50 p-2 rounded-lg border border-amber-200">
+                      <span>सप्लायर देना बाकी (Payable Debt):</span>
+                      <span className="font-mono text-red-700">-{formatINR(purchaseToDelete.balanceAmount)} (घटेगा)</span>
+                    </div>
+                  )}
+
+                  <div className="pt-1.5 border-t border-slate-200">
+                    <span className="text-slate-500 font-bold block mb-1">इन्वेंटरी स्टॉक से घटेगा (Stock Rollback):</span>
+                    <div className="space-y-1 max-h-28 overflow-y-auto pr-1">
+                      {purchaseToDelete.items.map((it, idx) => (
+                        <div key={idx} className="flex justify-between text-slate-700 bg-white p-1.5 rounded-lg border border-slate-200">
+                          <span className="truncate max-w-[190px] font-medium">{it.itemName}</span>
+                          <span className="font-mono font-bold text-red-600">-{it.quantity} {it.unit || 'PCS'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2">
+                <button
+                  type="button"
+                  disabled={isDeletingPurchase}
+                  onClick={() => setPurchaseToDelete(null)}
+                  className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-bold transition cursor-pointer"
+                >
+                  रद्द करें (Cancel)
+                </button>
+                <button
+                  type="button"
+                  disabled={isDeletingPurchase}
+                  onClick={handleConfirmDeletePurchase}
+                  className="px-5 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl font-bold shadow-md active:scale-95 flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>{isDeletingPurchase ? 'डिलीट हो रहा है...' : 'हाँ, बिल डिलीट और रोलबैक करें'}</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
