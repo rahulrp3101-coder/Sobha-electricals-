@@ -11,8 +11,10 @@ import {
   BarChart3, FileSpreadsheet, Download, TrendingUp, 
   ArrowUpRight, ArrowDownLeft, Calendar, FileText, CheckCircle2,
   Building2, Users, Receipt, PieChart, ShieldCheck, Wallet, 
-  AlertCircle, ChevronRight, Layers, DollarSign
+  AlertCircle, ChevronRight, Layers, DollarSign, Search, ArrowUpDown,
+  ShoppingBag, Sparkles
 } from 'lucide-react';
+import { DaySummaryModal } from './DaySummaryModal';
 
 interface GSTReportsViewProps {
   invoices: Invoice[];
@@ -23,8 +25,8 @@ interface GSTReportsViewProps {
   company: CompanyProfile;
 }
 
-type PeriodFilter = 'CURRENT_MONTH' | 'LAST_MONTH' | 'FY_2026_27' | 'ALL';
-type ReportSection = 'GSTR1' | 'GSTR2' | 'NET_TAX_PL';
+type PeriodFilter = 'TODAY' | 'THIS_WEEK' | 'CURRENT_MONTH' | 'LAST_MONTH' | 'FY_2026_27' | 'CUSTOM' | 'ALL';
+type ReportSection = 'PROFIT_LOSS' | 'GSTR1' | 'GSTR2' | 'NET_TAX';
 
 export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
   invoices,
@@ -34,9 +36,20 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
   parties,
   company,
 }) => {
-  const [activeSection, setActiveSection] = useState<ReportSection>('GSTR1');
+  const [activeSection, setActiveSection] = useState<ReportSection>('PROFIT_LOSS');
   const [periodFilter, setPeriodFilter] = useState<PeriodFilter>('CURRENT_MONTH');
+  const [customStartDate, setCustomStartDate] = useState<string>('');
+  const [customEndDate, setCustomEndDate] = useState<string>('');
+  const [isDaySummaryOpen, setIsDaySummaryOpen] = useState<boolean>(false);
+  const [profitSearchTerm, setProfitSearchTerm] = useState<string>('');
   const [gstr1SubTab, setGstr1SubTab] = useState<'ALL' | 'B2B' | 'B2C'>('ALL');
+
+  const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+  const thisWeekStartStr = useMemo(() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 6);
+    return d.toISOString().split('T')[0];
+  }, []);
 
   // Compute Period Bounds
   const periodBounds = useMemo(() => {
@@ -67,26 +80,44 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
   const { filteredInvoices, filteredExpenses, periodLabel } = useMemo(() => {
     let invs = [...invoices];
     let exps = [...expenses];
-    let label = 'Current Month (सितंबर 2026)';
+    let label = 'Current Month';
 
-    if (periodFilter === 'CURRENT_MONTH') {
+    if (periodFilter === 'TODAY') {
+      invs = invs.filter(i => i.date === todayStr);
+      exps = exps.filter(e => e.date === todayStr);
+      label = `आज (${todayStr})`;
+    } else if (periodFilter === 'THIS_WEEK') {
+      invs = invs.filter(i => i.date >= thisWeekStartStr && i.date <= todayStr);
+      exps = exps.filter(e => e.date >= thisWeekStartStr && e.date <= todayStr);
+      label = `इस हफ़्ते (${thisWeekStartStr} से ${todayStr})`;
+    } else if (periodFilter === 'CURRENT_MONTH') {
       invs = invs.filter(i => i.date.startsWith(periodBounds.currentMonthPrefix));
       exps = exps.filter(e => e.date.startsWith(periodBounds.currentMonthPrefix));
-      label = `Current Month (${periodBounds.currentMonthPrefix})`;
+      label = `इस महीने (${periodBounds.currentMonthPrefix})`;
     } else if (periodFilter === 'LAST_MONTH') {
       invs = invs.filter(i => i.date.startsWith(periodBounds.lastMonthPrefix));
       exps = exps.filter(e => e.date.startsWith(periodBounds.lastMonthPrefix));
-      label = `Last Month (${periodBounds.lastMonthPrefix})`;
+      label = `पिछले महीने (${periodBounds.lastMonthPrefix})`;
     } else if (periodFilter === 'FY_2026_27') {
       invs = invs.filter(i => i.date >= periodBounds.fyStart && i.date <= periodBounds.fyEnd);
       exps = exps.filter(e => e.date >= periodBounds.fyStart && e.date <= periodBounds.fyEnd);
       label = 'FY 2026-27 (वित्तीय वर्ष)';
+    } else if (periodFilter === 'CUSTOM') {
+      if (customStartDate) {
+        invs = invs.filter(i => i.date >= customStartDate);
+        exps = exps.filter(e => e.date >= customStartDate);
+      }
+      if (customEndDate) {
+        invs = invs.filter(i => i.date <= customEndDate);
+        exps = exps.filter(e => e.date <= customEndDate);
+      }
+      label = `कस्टम तारीख (${customStartDate || 'प्रारंभ'} से ${customEndDate || 'आज'})`;
     } else {
-      label = 'All Time Records (सभी रिकॉर्ड्स)';
+      label = 'सभी रिकॉर्ड्स (All Time)';
     }
 
     return { filteredInvoices: invs, filteredExpenses: exps, periodLabel: label };
-  }, [invoices, expenses, periodFilter, periodBounds]);
+  }, [invoices, expenses, periodFilter, periodBounds, todayStr, thisWeekStartStr, customStartDate, customEndDate]);
 
   // Section 1: GSTR-1 Outward Supplies (Sales)
   const salesInvoices = useMemo(() => {
@@ -202,6 +233,87 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
     };
   }, [gstr1Totals, gstr2Totals]);
 
+  // Section 4: Comprehensive Profit & Loss (COGS, Revenue, Expenses & Invoice-wise Profit)
+  const itemsMap = useMemo(() => {
+    const map = new Map<string, Item>();
+    items.forEach(it => map.set(it.id, it));
+    return map;
+  }, [items]);
+
+  const profitData = useMemo(() => {
+    const salesInvs = filteredInvoices.filter(i => 
+      (i.documentType === 'SALES_INVOICE' || !i.documentType) && 
+      i.status !== 'CANCELLED'
+    );
+
+    let totalRevenueTaxExcl = 0;
+    let totalGrossTurnover = 0;
+    let totalCOGS = 0;
+
+    const invoiceRows = salesInvs.map(inv => {
+      const revTaxExcl = (inv.subTotal !== undefined && inv.subTotal > 0)
+        ? inv.subTotal 
+        : (inv.grandTotal - (inv.totalTax || 0));
+      let invCogs = 0;
+      let totalQty = 0;
+
+      (inv.items || []).forEach(it => {
+        totalQty += (it.quantity || 0);
+        const originalItem = itemsMap.get(it.itemId);
+        const purchaseRate = (originalItem && originalItem.purchasePrice > 0)
+          ? originalItem.purchasePrice
+          : (it.unitPrice > 0 ? it.unitPrice * 0.75 : 0);
+        invCogs += ((it.quantity || 0) * purchaseRate);
+      });
+
+      const invProfit = revTaxExcl - invCogs;
+      const invMargin = revTaxExcl > 0 ? (invProfit / revTaxExcl) * 100 : 0;
+
+      totalRevenueTaxExcl += revTaxExcl;
+      totalGrossTurnover += inv.grandTotal;
+      totalCOGS += invCogs;
+
+      return {
+        invoice: inv,
+        revTaxExcl,
+        cogs: invCogs,
+        profit: invProfit,
+        marginPercent: invMargin,
+        totalQty,
+      };
+    });
+
+    const grossProfit = totalRevenueTaxExcl - totalCOGS;
+    const grossProfitMargin = totalRevenueTaxExcl > 0 ? (grossProfit / totalRevenueTaxExcl) * 100 : 0;
+
+    const totalExpenses = filteredExpenses.reduce((s, e) => s + (e.amount || 0), 0);
+    const netProfit = grossProfit - totalExpenses;
+    const netProfitMargin = totalRevenueTaxExcl > 0 ? (netProfit / totalRevenueTaxExcl) * 100 : 0;
+
+    return {
+      totalRevenueTaxExcl,
+      totalGrossTurnover,
+      totalCOGS,
+      grossProfit,
+      grossProfitMargin,
+      totalExpenses,
+      netProfit,
+      netProfitMargin,
+      invoiceRows,
+      salesCount: salesInvs.length,
+    };
+  }, [filteredInvoices, filteredExpenses, itemsMap]);
+
+  const displayedInvoiceRows = useMemo(() => {
+    if (!profitSearchTerm.trim()) return profitData.invoiceRows;
+    const q = profitSearchTerm.trim().toLowerCase();
+    return profitData.invoiceRows.filter(r => 
+      r.invoice.invoiceNumber.toLowerCase().includes(q) ||
+      r.invoice.partyName.toLowerCase().includes(q) ||
+      (r.invoice.partyPhone && r.invoice.partyPhone.includes(q))
+    );
+  }, [profitData.invoiceRows, profitSearchTerm]);
+
   // Export Handlers
   const handleDownloadCASummary = () => {
     exportFullCASummaryCSV(filteredInvoices, filteredExpenses, company, periodLabel);
@@ -229,14 +341,14 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
               </span>
               <div>
                 <h1 className="text-lg sm:text-xl font-black text-slate-900 tracking-tight">
-                  GST Reports & CA Tax Filing
+                  Business Reports, Profit & Loss & GST
                 </h1>
                 <p className="text-xs text-slate-500 font-medium">
-                  संपूर्ण GST रिटर्न (GSTR-1, GSTR-2, ITC), शुद्ध टैक्स देनदारी और मुनाफा रिपोर्ट
+                  📈 लाभ-हानि विश्लेषण (P&L), दिन का हिसाब, GSTR-1, GSTR-2 व शुद्ध टैक्स रिपोर्ट
                 </p>
               </div>
             </div>
-            <div className="flex items-center gap-3 mt-2 text-xs text-slate-500 font-mono">
+            <div className="flex items-center gap-3 mt-2 text-xs text-slate-500 font-mono flex-wrap">
               <span>GSTIN: <strong className="text-slate-800">{company.gstin || 'NOT SPECIFIED'}</strong></span>
               <span>•</span>
               <span>State: <strong className="text-slate-800">{company.stateCode}-{company.state}</strong></span>
@@ -245,11 +357,22 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
             </div>
           </div>
 
-          {/* Export Action Buttons (CA Ready) */}
+          {/* Export Action Buttons (CA Ready + Day Summary) */}
           <div className="flex flex-wrap items-center gap-2">
+            {/* Feature 4: Day Summary Button */}
+            <button
+              type="button"
+              onClick={() => setIsDaySummaryOpen(true)}
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-linear-to-r from-blue-600 via-indigo-600 to-blue-700 hover:from-blue-700 hover:to-indigo-800 text-white font-bold rounded-xl text-xs transition shadow-xs active:scale-95 cursor-pointer"
+              title="आज का पूरा हिसाब व कैश क्लोजिंग देखें (Day Summary)"
+            >
+              <span className="text-sm">📊</span>
+              <span>आज का हिसाब (Day Summary)</span>
+            </button>
+
             <button
               onClick={handleDownloadCASummary}
-              className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs transition shadow-xs active:scale-95"
+              className="flex items-center gap-1.5 px-3.5 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-xl text-xs transition shadow-xs active:scale-95 cursor-pointer"
               title="Download CA Excel/CSV Summary containing GSTR-1, GSTR-2 ITC, Expenses, and Net Tax"
             >
               <FileSpreadsheet className="w-4 h-4 text-emerald-200" />
@@ -258,16 +381,16 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
 
             <button
               onClick={handleDownloadGSTR1JSON}
-              className="flex items-center gap-1.5 px-3 py-2 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded-xl text-xs transition shadow-xs active:scale-95"
+              className="flex items-center gap-1.5 px-3 py-2 bg-blue-700 hover:bg-blue-800 text-white font-bold rounded-xl text-xs transition shadow-xs active:scale-95 cursor-pointer"
               title="Download Government GSTR-1 JSON file for direct upload on gst.gov.in offline tool"
             >
               <Download className="w-4 h-4" />
-              <span>GSTR-1 JSON (GST Portal)</span>
+              <span>GSTR-1 JSON</span>
             </button>
 
             <button
               onClick={handleDownloadSalesCSV}
-              className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition border border-slate-300"
+              className="flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl text-xs transition border border-slate-300 cursor-pointer"
               title="Export all invoices to CSV"
             >
               <FileText className="w-4 h-4 text-slate-500" />
@@ -276,63 +399,141 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
           </div>
         </div>
 
-        {/* Period Selector Bar */}
-        <div className="flex items-center justify-between border-t border-slate-100 pt-3 flex-wrap gap-2">
+        {/* Period Selector Bar (Feature 1: Date Range Filter) */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between border-t border-slate-100 pt-3 gap-3">
           <div className="flex items-center gap-1.5 text-xs text-slate-500">
             <Calendar className="w-4 h-4 text-slate-400" />
-            <span className="font-semibold text-slate-700">Reporting Period (समय अवधि):</span>
+            <span className="font-semibold text-slate-700">Reporting Period (समय अवधि फ़िल्टर):</span>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs">
-            <button
-              onClick={() => setPeriodFilter('CURRENT_MONTH')}
-              className={`px-3 py-1.5 rounded-lg font-bold transition ${
-                periodFilter === 'CURRENT_MONTH'
-                  ? 'bg-white text-blue-700 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              This Month (इस महीने)
-            </button>
-            <button
-              onClick={() => setPeriodFilter('LAST_MONTH')}
-              className={`px-3 py-1.5 rounded-lg font-bold transition ${
-                periodFilter === 'LAST_MONTH'
-                  ? 'bg-white text-blue-700 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              Last Month (पिछले महीने)
-            </button>
-            <button
-              onClick={() => setPeriodFilter('FY_2026_27')}
-              className={`px-3 py-1.5 rounded-lg font-bold transition ${
-                periodFilter === 'FY_2026_27'
-                  ? 'bg-white text-blue-700 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              FY 2026-27 (वित्तीय वर्ष)
-            </button>
-            <button
-              onClick={() => setPeriodFilter('ALL')}
-              className={`px-3 py-1.5 rounded-lg font-bold transition ${
-                periodFilter === 'ALL'
-                  ? 'bg-white text-blue-700 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              All Time (सभी)
-            </button>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl border border-slate-200 text-xs flex-wrap">
+              <button
+                type="button"
+                onClick={() => setPeriodFilter('TODAY')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  periodFilter === 'TODAY'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                आज (Today)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPeriodFilter('THIS_WEEK')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  periodFilter === 'THIS_WEEK'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                इस हफ़्ते (This Week)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPeriodFilter('CURRENT_MONTH')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  periodFilter === 'CURRENT_MONTH'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                इस महीने (This Month)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPeriodFilter('LAST_MONTH')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  periodFilter === 'LAST_MONTH'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                पिछले महीने (Last Month)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPeriodFilter('CUSTOM')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  periodFilter === 'CUSTOM'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                कस्टम तारीख (Custom)
+              </button>
+              <button
+                type="button"
+                onClick={() => setPeriodFilter('ALL')}
+                className={`px-3 py-1.5 rounded-lg font-bold transition cursor-pointer ${
+                  periodFilter === 'ALL'
+                    ? 'bg-white text-blue-700 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                All Time (सभी)
+              </button>
+            </div>
+
+            {/* Custom Date Inputs */}
+            {periodFilter === 'CUSTOM' && (
+              <div className="flex items-center gap-2 bg-blue-50 border border-blue-200 px-3 py-1 rounded-xl text-xs">
+                <span className="text-slate-500 font-semibold">From:</span>
+                <input
+                  type="date"
+                  value={customStartDate}
+                  onChange={(e) => setCustomStartDate(e.target.value)}
+                  className="bg-white border border-slate-300 rounded-lg px-2 py-0.5 text-xs text-slate-800"
+                />
+                <span className="text-slate-500 font-semibold">To:</span>
+                <input
+                  type="date"
+                  value={customEndDate}
+                  onChange={(e) => setCustomEndDate(e.target.value)}
+                  className="bg-white border border-slate-300 rounded-lg px-2 py-0.5 text-xs text-slate-800"
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
 
-      {/* Main 3 Section Tabs (User Requirement 2) */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+      {/* Main 4 Section Tabs */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+        {/* Tab 1: Profit & Loss (Feature 1) */}
+        <button
+          onClick={() => setActiveSection('PROFIT_LOSS')}
+          className={`p-3.5 rounded-2xl border text-left transition flex items-center justify-between shadow-2xs cursor-pointer ${
+            activeSection === 'PROFIT_LOSS'
+              ? 'bg-emerald-900 text-white border-emerald-900 ring-2 ring-emerald-500'
+              : 'bg-white text-slate-800 border-slate-200 hover:bg-slate-50'
+          }`}
+        >
+          <div className="flex items-center gap-3">
+            <div className={`p-2.5 rounded-xl ${activeSection === 'PROFIT_LOSS' ? 'bg-emerald-800 text-emerald-200' : 'bg-emerald-50 text-emerald-700'}`}>
+              <TrendingUp className="w-5 h-5" />
+            </div>
+            <div>
+              <div className="text-[11px] font-bold uppercase tracking-wider opacity-80">Report Tab</div>
+              <div className="text-sm font-extrabold">📈 Profit & Loss</div>
+              <div className={`text-[11px] ${activeSection === 'PROFIT_LOSS' ? 'text-emerald-200' : 'text-slate-500'}`}>
+                लाभ और हानि विश्लेषण
+              </div>
+            </div>
+          </div>
+          <div className="text-right font-mono font-bold text-sm">
+            {formatINR(profitData.netProfit)}
+            <div className={`text-[10px] font-normal ${activeSection === 'PROFIT_LOSS' ? 'text-emerald-300' : 'text-slate-400'}`}>
+              Net Profit
+            </div>
+          </div>
+        </button>
+
+        {/* Tab 2: GSTR-1 */}
         <button
           onClick={() => setActiveSection('GSTR1')}
-          className={`p-3.5 rounded-2xl border text-left transition flex items-center justify-between shadow-2xs ${
+          className={`p-3.5 rounded-2xl border text-left transition flex items-center justify-between shadow-2xs cursor-pointer ${
             activeSection === 'GSTR1'
               ? 'bg-blue-900 text-white border-blue-900 ring-2 ring-blue-500'
               : 'bg-white text-slate-800 border-slate-200 hover:bg-slate-50'
@@ -343,21 +544,25 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
               <FileSpreadsheet className="w-5 h-5" />
             </div>
             <div>
-              <div className="text-xs font-bold uppercase tracking-wider opacity-80">Section 1</div>
-              <div className="text-sm font-extrabold">GSTR-1 Outward Supplies</div>
+              <div className="text-[11px] font-bold uppercase tracking-wider opacity-80">Section 1</div>
+              <div className="text-sm font-extrabold">GSTR-1 Outward</div>
               <div className={`text-[11px] ${activeSection === 'GSTR1' ? 'text-blue-200' : 'text-slate-500'}`}>
-                बिक्री रिपोर्ट (B2B & B2C)
+                बिक्री रिपोर्ट (B2B/B2C)
               </div>
             </div>
           </div>
           <div className="text-right font-mono font-bold text-sm">
             {formatINR(gstr1Totals.totalGross)}
+            <div className={`text-[10px] font-normal ${activeSection === 'GSTR1' ? 'text-blue-300' : 'text-slate-400'}`}>
+              Gross Sales
+            </div>
           </div>
         </button>
 
+        {/* Tab 3: GSTR-2 */}
         <button
           onClick={() => setActiveSection('GSTR2')}
-          className={`p-3.5 rounded-2xl border text-left transition flex items-center justify-between shadow-2xs ${
+          className={`p-3.5 rounded-2xl border text-left transition flex items-center justify-between shadow-2xs cursor-pointer ${
             activeSection === 'GSTR2'
               ? 'bg-purple-900 text-white border-purple-900 ring-2 ring-purple-500'
               : 'bg-white text-slate-800 border-slate-200 hover:bg-slate-50'
@@ -368,10 +573,10 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
               <Building2 className="w-5 h-5" />
             </div>
             <div>
-              <div className="text-xs font-bold uppercase tracking-wider opacity-80">Section 2</div>
-              <div className="text-sm font-extrabold">GSTR-2 Inward & ITC</div>
+              <div className="text-[11px] font-bold uppercase tracking-wider opacity-80">Section 2</div>
+              <div className="text-sm font-extrabold">GSTR-2 Inward</div>
               <div className={`text-[11px] ${activeSection === 'GSTR2' ? 'text-purple-200' : 'text-slate-500'}`}>
-                खरीद व इनपुट टैक्स क्रेडिट
+                खरीद व इनपुट टैक्स
               </div>
             </div>
           </div>
@@ -383,30 +588,31 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
           </div>
         </button>
 
+        {/* Tab 4: Net GST Tax */}
         <button
-          onClick={() => setActiveSection('NET_TAX_PL')}
-          className={`p-3.5 rounded-2xl border text-left transition flex items-center justify-between shadow-2xs ${
-            activeSection === 'NET_TAX_PL'
-              ? 'bg-emerald-900 text-white border-emerald-900 ring-2 ring-emerald-500'
+          onClick={() => setActiveSection('NET_TAX')}
+          className={`p-3.5 rounded-2xl border text-left transition flex items-center justify-between shadow-2xs cursor-pointer ${
+            activeSection === 'NET_TAX'
+              ? 'bg-slate-900 text-white border-slate-900 ring-2 ring-blue-500'
               : 'bg-white text-slate-800 border-slate-200 hover:bg-slate-50'
           }`}
         >
           <div className="flex items-center gap-3">
-            <div className={`p-2.5 rounded-xl ${activeSection === 'NET_TAX_PL' ? 'bg-emerald-800 text-emerald-200' : 'bg-emerald-50 text-emerald-700'}`}>
-              <TrendingUp className="w-5 h-5" />
+            <div className={`p-2.5 rounded-xl ${activeSection === 'NET_TAX' ? 'bg-slate-800 text-blue-200' : 'bg-slate-100 text-slate-700'}`}>
+              <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <div className="text-xs font-bold uppercase tracking-wider opacity-80">Section 3</div>
-              <div className="text-sm font-extrabold">Net Tax & Profit (P&L)</div>
-              <div className={`text-[11px] ${activeSection === 'NET_TAX_PL' ? 'text-emerald-200' : 'text-slate-500'}`}>
-                शुद्ध टैक्स देनदारी व मुनाफा
+              <div className="text-[11px] font-bold uppercase tracking-wider opacity-80">Section 3</div>
+              <div className="text-sm font-extrabold">Net GST Tax</div>
+              <div className={`text-[11px] ${activeSection === 'NET_TAX' ? 'text-slate-300' : 'text-slate-500'}`}>
+                शुद्ध देय GST देनदारी
               </div>
             </div>
           </div>
           <div className="text-right font-mono font-bold text-sm">
-            {formatINR(netLiabilityAndProfit.netProfit)}
-            <div className={`text-[10px] font-normal ${activeSection === 'NET_TAX_PL' ? 'text-emerald-300' : 'text-slate-400'}`}>
-              Net Profit
+            {formatINR(netLiabilityAndProfit.netGstPayable)}
+            <div className={`text-[10px] font-normal ${activeSection === 'NET_TAX' ? 'text-slate-400' : 'text-slate-400'}`}>
+              Tax Payable
             </div>
           </div>
         </button>
@@ -738,8 +944,261 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
         </div>
       )}
 
-      {/* SECTION 3: NET TAX LIABILITY & PROFIT/LOSS (P&L) */}
-      {activeSection === 'NET_TAX_PL' && (
+      {/* SECTION: PROFIT & LOSS (PROFIT_LOSS) - Feature 1 */}
+      {activeSection === 'PROFIT_LOSS' && (
+        <div className="space-y-6 animate-in fade-in duration-150">
+          {/* 5 Clear Calculation Metric Cards */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+            {/* Card 1: Total Revenue / Sales Turnover (Tax-Exclusive) */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">
+                  कुल बिक्री (Total Sales)
+                </span>
+                <span className="p-1 rounded-lg bg-blue-50 text-blue-700">
+                  <DollarSign className="w-4 h-4" />
+                </span>
+              </div>
+              <div className="text-xl sm:text-2xl font-black font-mono text-slate-900">
+                {formatINR(profitData.totalRevenueTaxExcl)}
+              </div>
+              <div className="text-[10px] text-slate-500 flex flex-wrap justify-between items-center pt-1 border-t border-slate-100">
+                <span>Tax Exclusive Turnover</span>
+                <span className="font-semibold text-blue-700">{profitData.salesCount} बिल</span>
+              </div>
+            </div>
+
+            {/* Card 2: Cost of Goods Sold (COGS) */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">
+                  माल खरीद लागत (COGS)
+                </span>
+                <span className="p-1 rounded-lg bg-orange-50 text-orange-600">
+                  <Building2 className="w-4 h-4" />
+                </span>
+              </div>
+              <div className="text-xl sm:text-2xl font-black font-mono text-slate-900">
+                {formatINR(profitData.totalCOGS)}
+              </div>
+              <div className="text-[10px] text-slate-500 pt-1 border-t border-slate-100">
+                बिके सामानों की खरीद दर का योग
+              </div>
+            </div>
+
+            {/* Card 3: Gross Profit */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">
+                  सकल मुनाफ़ा (Gross Profit)
+                </span>
+                <span className="p-1 rounded-lg bg-emerald-50 text-emerald-700">
+                  <TrendingUp className="w-4 h-4" />
+                </span>
+              </div>
+              <div className="text-xl sm:text-2xl font-black font-mono text-emerald-700">
+                {formatINR(profitData.grossProfit)}
+              </div>
+              <div className="text-[10px] text-slate-500 flex justify-between items-center pt-1 border-t border-slate-100">
+                <span>Sales - COGS</span>
+                <span className="font-bold text-emerald-700">
+                  {profitData.grossProfitMargin.toFixed(1)}% Margin
+                </span>
+              </div>
+            </div>
+
+            {/* Card 4: Total Shop Expenses */}
+            <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-wide">
+                  दुकान खर्चे (Expenses)
+                </span>
+                <span className="p-1 rounded-lg bg-rose-50 text-rose-600">
+                  <Wallet className="w-4 h-4" />
+                </span>
+              </div>
+              <div className="text-xl sm:text-2xl font-black font-mono text-rose-600">
+                {formatINR(profitData.totalExpenses)}
+              </div>
+              <div className="text-[10px] text-slate-500 pt-1 border-t border-slate-100">
+                किराया, बिजली, पगार, भाड़ा आदि
+              </div>
+            </div>
+
+            {/* Card 5: Net Profit */}
+            <div className={`p-4 rounded-2xl border shadow-2xs space-y-1 ${
+              profitData.netProfit >= 0
+                ? 'bg-linear-to-br from-emerald-50 to-teal-50 border-emerald-300'
+                : 'bg-linear-to-br from-rose-50 to-red-50 border-rose-300'
+            }`}>
+              <div className="flex items-center justify-between">
+                <span className={`text-[11px] font-black uppercase tracking-wide ${
+                  profitData.netProfit >= 0 ? 'text-emerald-950' : 'text-rose-950'
+                }`}>
+                  शुद्ध मुनाफ़ा (Net Profit)
+                </span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-black ${
+                  profitData.netProfit >= 0 ? 'bg-emerald-200 text-emerald-900' : 'bg-rose-200 text-rose-900'
+                }`}>
+                  {profitData.netProfit >= 0 ? 'मुनाफ़ा' : 'घाटा'}
+                </span>
+              </div>
+              <div className={`text-xl sm:text-2xl font-black font-mono ${
+                profitData.netProfit >= 0 ? 'text-emerald-800' : 'text-rose-800'
+              }`}>
+                {formatINR(profitData.netProfit)}
+              </div>
+              <div className="text-[10px] flex justify-between items-center pt-1 border-t border-slate-200/60 font-semibold text-slate-600">
+                <span>Gross - Expenses</span>
+                <span className="font-bold">
+                  {profitData.netProfitMargin.toFixed(1)}% Net Margin
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Invoice-wise Profit Table (Requirement 1) */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden">
+            <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col md:flex-row md:items-center justify-between gap-3 bg-slate-50/50">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="p-1.5 bg-emerald-100 text-emerald-800 rounded-lg">
+                    <Receipt className="w-4 h-4" />
+                  </span>
+                  <h3 className="font-bold text-slate-900 text-sm sm:text-base">
+                    इनवॉइस-वाइज़ मुनाफ़ा (Invoice-wise Profit & Margin)
+                  </h3>
+                </div>
+                <p className="text-xs text-slate-500 mt-0.5">
+                  हर बिल के सामने उस बिल पर हुआ शुद्ध मुनाफ़ा (Profit ₹) और मार्जिन % (केवल एडमिन/मालिक के लिए)
+                </p>
+              </div>
+
+              {/* Search Bar */}
+              <div className="relative w-full md:w-72">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={profitSearchTerm}
+                  onChange={(e) => setProfitSearchTerm(e.target.value)}
+                  placeholder="ग्राहक, मोबाइल, बिल नं. खोजें..."
+                  className="w-full pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            {/* Table */}
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-50 text-slate-600 font-bold border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-3.5">तारीख (Date)</th>
+                    <th className="py-3 px-3">बिल नं. (Invoice #)</th>
+                    <th className="py-3 px-3">ग्राहक (Customer)</th>
+                    <th className="py-3 px-3">मोड (Payment)</th>
+                    <th className="py-3 px-3 text-right">बिक्री मूल्य (Sales ₹)</th>
+                    <th className="py-3 px-3 text-right">खरीद लागत (COGS ₹)</th>
+                    <th className="py-3 px-3 text-right">शुद्ध मुनाफ़ा (Profit ₹)</th>
+                    <th className="py-3 px-3 text-right">मार्जिन %</th>
+                    <th className="py-3 px-3 text-center">सामान (Items)</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {displayedInvoiceRows.map((row) => {
+                    const isProfit = row.profit >= 0;
+                    return (
+                      <tr key={row.invoice.id} className="hover:bg-slate-50/80 transition">
+                        <td className="py-2.5 px-3.5 font-mono text-slate-500 whitespace-nowrap">
+                          {row.invoice.date}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className="font-bold text-slate-900 font-mono">
+                            {row.invoice.invoiceNumber}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <div className="font-semibold text-slate-900">{row.invoice.partyName}</div>
+                          {row.invoice.partyPhone && (
+                            <div className="text-[10px] text-slate-400 font-mono">📱 {row.invoice.partyPhone}</div>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                            row.invoice.paymentMode === 'CASH'
+                              ? 'bg-emerald-100 text-emerald-800'
+                              : row.invoice.paymentMode === 'CREDIT'
+                              ? 'bg-amber-100 text-amber-900'
+                              : 'bg-blue-100 text-blue-900'
+                          }`}>
+                            {row.invoice.paymentMode}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono font-semibold text-slate-800">
+                          {formatINR(row.revTaxExcl)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-slate-600">
+                          {formatINR(row.cogs)}
+                        </td>
+                        <td className={`py-2.5 px-3 text-right font-mono font-black ${
+                          isProfit ? 'text-emerald-700' : 'text-rose-600'
+                        }`}>
+                          {isProfit ? `+${formatINR(row.profit)}` : formatINR(row.profit)}
+                        </td>
+                        <td className="py-2.5 px-3 text-right">
+                          <span className={`inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-extrabold font-mono ${
+                            isProfit 
+                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' 
+                              : 'bg-rose-50 text-rose-700 border border-rose-200'
+                          }`}>
+                            {row.marginPercent.toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-slate-500 font-mono">
+                          {row.totalQty} pcs
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {displayedInvoiceRows.length === 0 && (
+                    <tr>
+                      <td colSpan={9} className="py-10 text-center text-slate-400">
+                        इस समय अवधि में कोई बिक्री बिल उपलब्ध नहीं है (No sales invoices found for this period).
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+                {displayedInvoiceRows.length > 0 && (
+                  <tfoot className="bg-slate-50/90 font-bold border-t-2 border-slate-200 text-slate-900">
+                    <tr>
+                      <td colSpan={4} className="py-3 px-3.5 text-right font-bold">
+                        कुल योग ({displayedInvoiceRows.length} बिल):
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono font-black text-slate-900">
+                        {formatINR(profitData.totalRevenueTaxExcl)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-slate-700">
+                        {formatINR(profitData.totalCOGS)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono font-black text-emerald-700">
+                        +{formatINR(profitData.grossProfit)}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono font-bold text-emerald-800">
+                        {profitData.grossProfitMargin.toFixed(1)}%
+                      </td>
+                      <td className="py-3 px-3 text-center font-mono">
+                        {displayedInvoiceRows.reduce((s, r) => s + r.totalQty, 0)} pcs
+                      </td>
+                    </tr>
+                  </tfoot>
+                )}
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* SECTION: NET TAX LIABILITY */}
+      {activeSection === 'NET_TAX' && (
         <div className="space-y-6">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
             {/* Card 1: Net Tax Liability Calculation */}
@@ -838,7 +1297,7 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
               </div>
             </div>
 
-            {/* Card 2: Net Profit & Loss (P&L) Summary */}
+            {/* Card 2: Summary Info */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs p-5 space-y-4">
               <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
                 <span className="p-2 bg-emerald-100 text-emerald-800 rounded-xl">
@@ -846,10 +1305,10 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
                 </span>
                 <div>
                   <h3 className="font-bold text-slate-900 text-base">
-                    Net Business Profit / P&L (शुद्ध मुनाफा सारांश)
+                    Quick Profit Overview (मुनाफ़ा झलक)
                   </h3>
                   <p className="text-xs text-slate-500 font-mono">
-                    शुद्ध मुनाफा = कुल बिक्री - (कुल खरीद + दुकान के सारे खर्चे)
+                    विस्तृत विश्लेषण के लिए 📈 Profit & Loss टैब देखें
                   </p>
                 </div>
               </div>
@@ -860,12 +1319,12 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
                   <div className="flex items-center gap-2">
                     <DollarSign className="w-4 h-4 text-emerald-600" />
                     <div>
-                      <div className="font-bold text-slate-900">Total Gross Sales Revenue</div>
-                      <div className="text-[10px] text-slate-500">अवधि की कुल बिक्री (Turnover)</div>
+                      <div className="font-bold text-slate-900">Total Sales Turnover</div>
+                      <div className="text-[10px] text-slate-500">अवधि की कुल बिक्री राशि</div>
                     </div>
                   </div>
                   <div className="font-mono font-bold text-sm text-slate-900">
-                    +{formatINR(netLiabilityAndProfit.grossSales)}
+                    +{formatINR(profitData.totalRevenueTaxExcl)}
                   </div>
                 </div>
 
@@ -873,12 +1332,12 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
                   <div className="flex items-center gap-2">
                     <Building2 className="w-4 h-4 text-red-500" />
                     <div>
-                      <div className="font-bold text-slate-900">Less: Goods Purchased (COGS)</div>
-                      <div className="text-[10px] text-slate-500">सप्लायर से माल की कुल खरीद</div>
+                      <div className="font-bold text-slate-900">Less: Goods Cost (COGS)</div>
+                      <div className="text-[10px] text-slate-500">बिके सामान की खरीद लागत</div>
                     </div>
                   </div>
                   <div className="font-mono font-bold text-sm text-red-600">
-                    -{formatINR(netLiabilityAndProfit.purchases)}
+                    -{formatINR(profitData.totalCOGS)}
                   </div>
                 </div>
 
@@ -886,38 +1345,33 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
                   <div className="flex items-center gap-2">
                     <Wallet className="w-4 h-4 text-rose-500" />
                     <div>
-                      <div className="font-bold text-slate-900">Less: Total Shop Expenses</div>
-                      <div className="text-[10px] text-slate-500">दुकान किराया, बिजली, पगार, भाड़ा आदि</div>
+                      <div className="font-bold text-slate-900">Less: Shop Expenses</div>
+                      <div className="text-[10px] text-slate-500">दुकान के दर्ज खर्चे</div>
                     </div>
                   </div>
                   <div className="font-mono font-bold text-sm text-rose-600">
-                    -{formatINR(netLiabilityAndProfit.shopExpenses)}
+                    -{formatINR(profitData.totalExpenses)}
                   </div>
                 </div>
 
                 {/* Net Profit Callout Box */}
                 <div className={`p-4 rounded-2xl border-2 space-y-1 ${
-                  netLiabilityAndProfit.netProfit >= 0
+                  profitData.netProfit >= 0
                     ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
                     : 'bg-rose-50 border-rose-300 text-rose-950'
                 }`}>
                   <div className="flex items-center justify-between">
                     <div>
                       <span className="text-xs font-bold uppercase tracking-wide block">
-                        Net Business Profit (शुद्ध शुद्ध मुनाफा):
+                        Net Business Profit (शुद्ध मुनाफा):
                       </span>
                       <span className="text-[10px] font-semibold opacity-75">
-                        मार्जिन: {netLiabilityAndProfit.profitMargin.toFixed(1)}% of Sales
+                        मार्जिन: {profitData.netProfitMargin.toFixed(1)}% of Sales
                       </span>
                     </div>
                     <span className="text-2xl font-black font-mono">
-                      {formatINR(netLiabilityAndProfit.netProfit)}
+                      {formatINR(profitData.netProfit)}
                     </span>
-                  </div>
-                  <div className="text-[11px] font-medium pt-1 border-t border-slate-200/50">
-                    {netLiabilityAndProfit.netProfit >= 0
-                      ? '✓ आपकी दुकान मुनाफे में चल रही है (Net Profit positive).'
-                      : '⚠️ इस अवधि में खर्चे और खरीद बिक्री से अधिक रहे हैं (Net Loss).'}
                   </div>
                 </div>
               </div>
@@ -925,6 +1379,17 @@ export const GSTReportsView: React.FC<GSTReportsViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Day-End Cash & Sales Summary Modal (Feature 4) */}
+      <DaySummaryModal
+        isOpen={isDaySummaryOpen}
+        onClose={() => setIsDaySummaryOpen(false)}
+        invoices={invoices}
+        payments={payments}
+        expenses={expenses}
+        items={items}
+        company={company}
+      />
     </div>
   );
 };

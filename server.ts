@@ -14,7 +14,8 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
 
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: '35mb' }));
+app.use(express.urlencoded({ limit: '35mb', extended: true }));
 
 // In-memory fallback for admin credentials & single active session
 let inMemoryAdmin = {
@@ -323,6 +324,7 @@ app.post('/api/sync/push', async (req, res) => {
           currentStock: String(item.currentStock),
           lowStockThreshold: String(item.lowStockThreshold),
           batches: item.batches,
+          aliases: item.aliases || [],
         })
         .onConflictDoUpdate({
           target: schema.items.id,
@@ -330,6 +332,7 @@ app.post('/api/sync/push', async (req, res) => {
             name: item.name,
             currentStock: String(item.currentStock),
             retailPrice: String(item.retailPrice),
+            aliases: item.aliases || [],
             updatedAt: new Date(),
           },
         });
@@ -440,6 +443,7 @@ app.post('/api/items', async (req, res) => {
         currentStock: String(item.currentStock),
         lowStockThreshold: String(item.lowStockThreshold),
         batches: item.batches,
+        aliases: item.aliases || [],
       })
       .onConflictDoUpdate({
         target: schema.items.id,
@@ -448,6 +452,7 @@ app.post('/api/items', async (req, res) => {
           currentStock: String(item.currentStock),
           retailPrice: String(item.retailPrice),
           purchasePrice: String(item.purchasePrice),
+          aliases: item.aliases || [],
           updatedAt: new Date(),
         },
       });
@@ -486,6 +491,118 @@ app.post('/api/parties', async (req, res) => {
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// AI OCR Vision Bill Scanner Endpoint using Gemini 3.8 Flash
+app.post('/api/ai/scan-bill', async (req, res) => {
+  const { imageBase64, mimeType } = req.body;
+
+  if (!imageBase64) {
+    return res.status(400).json({ error: 'बिल की फोटो या PDF डेटा (Base64) नहीं मिला।' });
+  }
+
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    return res.status(500).json({ 
+      error: 'GEMINI_API_KEY पर्यावरण चर उपलब्ध नहीं है। कृपया Settings > Secrets में जाकर GEMINI_API_KEY जोड़ें।' 
+    });
+  }
+
+  try {
+    const { GoogleGenAI, Type } = await import('@google/genai');
+
+    const ai = new GoogleGenAI({
+      apiKey,
+      httpOptions: {
+        headers: {
+          'User-Agent': 'aistudio-build',
+        },
+      },
+    });
+
+    const cleanBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '');
+    const cleanMimeType = mimeType || 'image/jpeg';
+
+    const responseSchema = {
+      type: Type.OBJECT,
+      properties: {
+        supplierName: { type: Type.STRING, description: 'Name of the supplier, shop, or vendor issuing the bill' },
+        supplierGstin: { type: Type.STRING, description: '15-character GSTIN of the supplier if present, or empty string' },
+        supplierPhone: { type: Type.STRING, description: 'Phone or mobile number of supplier if present, or empty string' },
+        supplierAddress: { type: Type.STRING, description: 'Address of the supplier if present, or empty string' },
+        billNumber: { type: Type.STRING, description: 'Invoice or Bill Number' },
+        billDate: { type: Type.STRING, description: 'Date of invoice in YYYY-MM-DD format' },
+        paymentMode: { type: Type.STRING, description: 'Payment mode: CREDIT, CASH, BANK_TRANSFER, or UPI' },
+        items: {
+          type: Type.ARRAY,
+          items: {
+            type: Type.OBJECT,
+            properties: {
+              name: { type: Type.STRING, description: 'Item or product description / title' },
+              hsn: { type: Type.STRING, description: 'HSN or SAC code of product if visible' },
+              quantity: { type: Type.NUMBER, description: 'Quantity purchased' },
+              unit: { type: Type.STRING, description: 'Unit of measurement, e.g., PCS, BOX, KG, PACK, MTR' },
+              mrp: { type: Type.NUMBER, description: 'MRP or List/Catalogue Price printed on bill before trade discount, or same as unitPrice if no MRP' },
+              discountPercent: { type: Type.NUMBER, description: 'Discount percentage on MRP or list price if applicable, otherwise 0' },
+              unitPrice: { type: Type.NUMBER, description: 'NET Unit purchase rate/price before tax. If MRP and discount% are given, Net Rate = MRP - (MRP * discount% / 100). Never mistake MRP for Net Purchase Rate!' },
+              taxRate: { type: Type.NUMBER, description: 'GST tax rate percentage: 0, 5, 12, 18, or 28' },
+            },
+            required: ['name', 'quantity', 'unitPrice', 'taxRate'],
+          },
+        },
+        notes: { type: Type.STRING, description: 'Any extra remarks or notes from bill' },
+      },
+      required: ['supplierName', 'billNumber', 'billDate', 'items'],
+    };
+
+    const response = await ai.models.generateContent({
+      model: 'gemini-3.8-flash',
+      contents: [
+        {
+          inlineData: {
+            mimeType: cleanMimeType,
+            data: cleanBase64,
+          },
+        },
+        {
+          text: `You are an expert Indian GST Tax Invoice and Purchase Bill OCR parser.
+Carefully read this vendor purchase bill / tax invoice image or document.
+Extract:
+1. Supplier / Vendor details: Legal/Trade Name, 15-character GSTIN, phone, address.
+2. Invoice / Bill Number and Bill Date (convert any DD/MM/YYYY or DD-MM-YYYY format to standard YYYY-MM-DD).
+3. Payment mode: CREDIT (if unpaid/due/khata), CASH, BANK_TRANSFER, or UPI.
+4. All line items purchased:
+   - Product name (clean, descriptive title without junk serial numbers)
+   - HSN/SAC code (if printed)
+   - Quantity (number)
+   - Unit (e.g. PCS, BOX, KG, PACK, MTR)
+   - MRP: Printed MRP or List Price.
+   - Discount %: Trade discount % on MRP or list price.
+   - Unit Purchase Rate / Net Rate (CRITICAL RULE): If bill has MRP and Discount %, Net Rate = MRP - (MRP * Discount / 100). For example, if MRP is 1000 and discount is 40%, unitPrice MUST BE 600 (not 1000). Cross-check with Taxable Amount = Quantity * unitPrice.
+   - GST % (0, 5, 12, 18, 28). If CGST 9% + SGST 9% is shown, return 18.
+
+Return ONLY structured JSON conforming strictly to the provided responseSchema.`,
+        },
+      ],
+      config: {
+        responseMimeType: 'application/json',
+        responseSchema,
+      },
+    });
+
+    const text = response.text;
+    if (!text) {
+      throw new Error('Gemini Vision API ने कोई डेटा वापस नहीं किया।');
+    }
+
+    const parsedData = JSON.parse(text);
+    return res.json({ success: true, data: parsedData });
+  } catch (err: any) {
+    console.error('Error in /api/ai/scan-bill:', err);
+    return res.status(500).json({ 
+      error: 'AI OCR बिल स्कैन में त्रुटि: ' + (err.message || 'त्रुटि हुई') 
+    });
   }
 });
 

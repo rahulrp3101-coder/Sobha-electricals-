@@ -176,15 +176,16 @@ export const FinalInvoiceModal: React.FC<FinalInvoiceModalProps> = ({
 
         {/* Action Footer Buttons */}
         <div className="p-4 bg-white border-t border-slate-200 space-y-2.5">
-          {/* Primary Action: WhatsApp Share */}
+          {/* Primary Action: WhatsApp Share (Requirement 2) */}
           <a
             href={generateWhatsAppInvoiceURL(invoice, company)}
             target="_blank"
             rel="noopener noreferrer"
-            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs sm:text-sm font-extrabold transition flex items-center justify-center gap-2 shadow-xs active:scale-98"
+            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs sm:text-sm font-black transition flex items-center justify-center gap-2 shadow-md active:scale-98 cursor-pointer"
+            title="web.whatsapp.com पर ग्राहक को बिल भेजें"
           >
-            <Share2 className="w-4 h-4" />
-            <span>ग्राहक को WhatsApp पर बिल भेजें</span>
+            <span className="text-base">📲</span>
+            <span>WhatsApp पर बिल भेजें</span>
           </a>
 
           {/* Printing Buttons Grid */}

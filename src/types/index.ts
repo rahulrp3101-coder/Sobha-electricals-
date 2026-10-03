@@ -82,6 +82,7 @@ export interface Item {
   currentStock: number;
   lowStockThreshold: number;
   batches?: ItemBatch[];
+  aliases?: string[]; // Vendor/bill aliases for AI auto-matching
   createdAt: string;
   updatedAt: string;
 }
@@ -92,7 +93,9 @@ export interface InvoiceItem {
   hsn: string;
   unit: string;
   quantity: number;
-  unitPrice: number; // base price or selling price
+  unitPrice: number; // net purchase price or selling price
+  mrp?: number; // MRP or List Price from vendor bill
+  salePrice?: number; // Retail selling price to be synced to inventory
   discountPercent: number;
   discountAmount: number;
   taxRate: number;

@@ -327,7 +327,14 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                 return (
                   <tr key={item.id} className="hover:bg-slate-50/70 transition">
                     <td className="py-3 px-4">
-                      <div className="font-bold text-slate-900 text-sm">{item.name}</div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-slate-900 text-sm">{item.name}</span>
+                        {(item.currentStock <= 3 || isLow) && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-red-100 text-red-700 border border-red-200">
+                            ⚠️ Low Stock ({item.currentStock} {item.unit || 'Pcs'} शेष)
+                          </span>
+                        )}
+                      </div>
                       <div className="text-[11px] text-slate-400 flex items-center gap-2 mt-0.5">
                         <span>SKU: {item.sku}</span>
                         {item.barcode && <span>बारकोड: {item.barcode}</span>}
@@ -415,9 +422,16 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
               <div key={item.id} className="p-3.5 space-y-2.5">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <h4 className="text-sm font-bold text-slate-900 leading-tight">
-                      {item.name}
-                    </h4>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <h4 className="text-sm font-bold text-slate-900 leading-tight">
+                        {item.name}
+                      </h4>
+                      {(item.currentStock <= 3 || isLow) && (
+                        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-red-100 text-red-700 border border-red-200">
+                          ⚠️ Low Stock ({item.currentStock} {item.unit || 'Pcs'} शेष)
+                        </span>
+                      )}
+                    </div>
                     <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5">
                       <span>{item.category}</span>
                       <span>·</span>

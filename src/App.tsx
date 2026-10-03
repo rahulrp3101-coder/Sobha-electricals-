@@ -17,7 +17,6 @@ import { DEFAULT_COMPANY } from './db/defaultData';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
 import { Header, MainTab } from './components/common/Header';
 import { BottomNav } from './components/common/BottomNav';
-import { OfflineBanner } from './components/common/OfflineBanner';
 import { VyaparPOSView } from './components/pos/VyaparPOSView';
 import { InvoiceList } from './components/invoices/InvoiceList';
 import { EstimatesRegister } from './components/estimates/EstimatesRegister';
@@ -502,6 +501,8 @@ export default function App() {
             parties={parties}
             company={company}
             invoices={invoices}
+            expenses={expenses}
+            payments={payments}
             onSaveInvoice={handleSaveInvoice}
             onSaveParty={handleSaveParty}
             onSaveItem={handleSaveItem}
@@ -666,12 +667,6 @@ export default function App() {
           </button>
         </div>
       )}
-
-      {/* Offline Status Floating Banner */}
-      <OfflineBanner
-        isOnline={isOnline}
-        pendingSyncCount={pendingSyncCount}
-      />
     </div>
   );
 }

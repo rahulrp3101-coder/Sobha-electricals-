@@ -8,8 +8,9 @@ import {
   Plus, Search, Building2, Users, FileText, ArrowDownLeft, 
   ArrowUpRight, RotateCcw, AlertTriangle, Check, Printer, 
   Phone, MapPin, Hash, Trash2, X, ChevronRight, DollarSign,
-  Calendar, CreditCard, ShoppingBag, Eye, Edit
+  Calendar, CreditCard, ShoppingBag, Eye, Edit, Camera, Sparkles
 } from 'lucide-react';
+import { AiBillScannerModal } from './AiBillScannerModal';
 
 interface PurchasesAndVendorsProps {
   parties: Party[];
@@ -49,6 +50,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
   // Modals state
   const [isAddSupplierModalOpen, setIsAddSupplierModalOpen] = useState(false);
   const [isNewPurchaseModalOpen, setIsNewPurchaseModalOpen] = useState(false);
+  const [isAiScannerModalOpen, setIsAiScannerModalOpen] = useState(false);
   const [isPaymentOutModalOpen, setIsPaymentOutModalOpen] = useState(false);
   const [isReturnModalOpen, setIsReturnModalOpen] = useState(false);
   const [returnType, setReturnType] = useState<'SALES_RETURN' | 'PURCHASE_RETURN'>('PURCHASE_RETURN');
@@ -63,6 +65,18 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
 
   // Purchase Bill Form State
   const [selectedSupplierId, setSelectedSupplierId] = useState('');
+  const [tempNewSupplier, setTempNewSupplier] = useState<{
+    name: string;
+    gstin?: string;
+    phone?: string;
+    address?: string;
+    state?: string;
+    stateCode?: string;
+  } | null>(null);
+  const [isInlineNewSupplierOpen, setIsInlineNewSupplierOpen] = useState(false);
+  const [inlineSupplierName, setInlineSupplierName] = useState('');
+  const [inlineSupplierPhone, setInlineSupplierPhone] = useState('');
+  const [inlineSupplierGstin, setInlineSupplierGstin] = useState('');
   const [supplierBillNo, setSupplierBillNo] = useState('');
   const [billDate, setBillDate] = useState(new Date().toISOString().split('T')[0]);
   const [purchaseLines, setPurchaseLines] = useState<InvoiceItem[]>([]);
@@ -286,15 +300,41 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     }
   };
 
-  // Helper to get selected supplier
+  // Helper to get selected supplier (supports auto-created temp supplier)
   const selectedSupplier = useMemo(() => {
+    if (selectedSupplierId === '__TEMP_NEW__' && tempNewSupplier) {
+      return {
+        id: '__TEMP_NEW__',
+        name: tempNewSupplier.name,
+        type: 'SUPPLIER' as const,
+        phone: tempNewSupplier.phone || '9999999999',
+        address: tempNewSupplier.address || '',
+        gstin: tempNewSupplier.gstin,
+        state: tempNewSupplier.state || company.state || 'Maharashtra',
+        stateCode: tempNewSupplier.stateCode || company.stateCode || '27',
+        creditLimit: 0,
+        currentBalance: 0,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+    }
     return suppliers.find(s => s.id === selectedSupplierId);
-  }, [suppliers, selectedSupplierId]);
+  }, [suppliers, selectedSupplierId, tempNewSupplier, company]);
 
   // Handle supplier selection change and recalculate existing lines' taxes
   const handleSelectSupplier = (suppId: string) => {
+    if (suppId === '__ADD_INLINE__') {
+      setIsInlineNewSupplierOpen(true);
+      return;
+    }
     setSelectedSupplierId(suppId);
-    const supp = suppliers.find(s => s.id === suppId);
+    if (suppId !== '__TEMP_NEW__') {
+      setTempNewSupplier(null);
+    }
+    const supp = suppId === '__TEMP_NEW__' && tempNewSupplier
+      ? { stateCode: tempNewSupplier.stateCode || company.stateCode || '27' }
+      : suppliers.find(s => s.id === suppId);
+
     const sellerStateCode = supp?.stateCode || company.stateCode || '27';
     const buyerStateCode = company.stateCode || '27';
 
@@ -321,10 +361,12 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     );
   };
 
-  // Add Item Line to Purchase Bill (Tax Exclusive: Price + GST)
+  // Add Item Line to Purchase Bill (Tax Exclusive: Net Price + GST with MRP & Sale Price tracking)
   const handleAddPurchaseLine = (item: Item) => {
     const existingIndex = purchaseLines.findIndex(l => l.itemId === item.id);
-    const price = item.purchasePrice || item.retailPrice || 100;
+    const initialMrp = item.retailPrice || item.purchasePrice || 100;
+    const initialNetRate = item.purchasePrice || item.retailPrice || 100;
+    const initialSalePrice = item.retailPrice || Math.round(initialNetRate * 1.20);
     const taxRate = item.taxRate !== undefined ? item.taxRate : 18;
     const sellerStateCode = selectedSupplier?.stateCode || company.stateCode || '27';
     const buyerStateCode = company.stateCode || '27';
@@ -357,11 +399,11 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     }
 
     const calc = calculateItemGST({
-      rate: price,
+      rate: initialNetRate,
       quantity: 1,
       discountPercent: 0,
       taxRate: taxRate,
-      isTaxInclusive: false, // Tax Exclusive: Price + GST
+      isTaxInclusive: false, // Tax Exclusive: Net Price + GST
       sellerStateCode,
       buyerStateCode,
     });
@@ -372,9 +414,11 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
       hsn: item.hsn || '19053100',
       unit: item.unit || 'PCS',
       quantity: 1,
-      unitPrice: price,
+      mrp: initialMrp,
       discountPercent: 0,
       discountAmount: 0,
+      unitPrice: initialNetRate,
+      salePrice: initialSalePrice,
       taxRate: taxRate,
       taxableAmount: calc.taxableAmount,
       cgstAmount: calc.cgstAmount,
@@ -387,25 +431,48 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     setPurchaseLines([...purchaseLines, newLine]);
   };
 
-  // Update Line Quantity / Price / GST Rate in Purchase Bill (Tax Exclusive)
-  const handleUpdatePurchaseLine = (index: number, qty: number, price: number, taxRate?: number) => {
-    if (qty <= 0) {
+  // Update Line in Purchase Bill (MRP, Discount %, Net Rate, Sale Price, Tax Rate, Qty)
+  const handleUpdatePurchaseLine = (
+    index: number,
+    field: 'qty' | 'mrp' | 'discount' | 'netRate' | 'salePrice' | 'taxRate' | 'remove',
+    val: number
+  ) => {
+    if (field === 'remove' || (field === 'qty' && val <= 0)) {
       setPurchaseLines(purchaseLines.filter((_, i) => i !== index));
       return;
     }
 
     const current = purchaseLines[index];
-    const rateVal = price >= 0 ? price : current.unitPrice;
-    const taxRateVal = taxRate !== undefined ? taxRate : (current.taxRate ?? 18);
+    let qty = field === 'qty' ? val : current.quantity;
+    let mrp = field === 'mrp' ? val : (current.mrp ?? current.unitPrice);
+    let disc = field === 'discount' ? val : (current.discountPercent ?? 0);
+    let netRate = field === 'netRate' ? val : current.unitPrice;
+    let salePrice = field === 'salePrice' ? val : (current.salePrice ?? Math.round(netRate * 1.20));
+    let taxRate = field === 'taxRate' ? val : (current.taxRate ?? 18);
+
+    // Rule: Net Rate Calculation
+    // When MRP or Discount % changes: Net Rate = MRP - (MRP * Disc % / 100)
+    if (field === 'mrp' || field === 'discount') {
+      netRate = Math.round((mrp * (1 - disc / 100)) * 100) / 100;
+      if (field === 'mrp' && salePrice < mrp) {
+        salePrice = mrp;
+      }
+    } else if (field === 'netRate') {
+      // If Net Rate is directly changed, calculate implied discount % if MRP > 0
+      if (mrp > 0 && mrp >= netRate) {
+        disc = Math.round(((mrp - netRate) / mrp) * 1000) / 10;
+      }
+    }
+
     const sellerStateCode = selectedSupplier?.stateCode || company.stateCode || '27';
     const buyerStateCode = company.stateCode || '27';
 
     const calc = calculateItemGST({
-      rate: rateVal,
+      rate: netRate,
       quantity: qty,
       discountPercent: 0,
-      taxRate: taxRateVal,
-      isTaxInclusive: false, // Tax Exclusive
+      taxRate: taxRate,
+      isTaxInclusive: false,
       sellerStateCode,
       buyerStateCode,
     });
@@ -413,8 +480,12 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     const updated: InvoiceItem = {
       ...current,
       quantity: qty,
-      unitPrice: rateVal,
-      taxRate: taxRateVal,
+      mrp,
+      discountPercent: disc,
+      discountAmount: ((mrp - netRate) * qty),
+      unitPrice: netRate,
+      salePrice,
+      taxRate,
       taxableAmount: calc.taxableAmount,
       cgstAmount: calc.cgstAmount,
       sgstAmount: calc.sgstAmount,
@@ -425,6 +496,43 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
     const newArr = [...purchaseLines];
     newArr[index] = updated;
     setPurchaseLines(newArr);
+  };
+
+  // Handle auto-filling purchase bill from AI Bill Scanner
+  const handleApplyScannedBill = (data: {
+    supplierId: string;
+    tempNewSupplier?: {
+      name: string;
+      gstin?: string;
+      phone?: string;
+      address?: string;
+    };
+    supplierBillNo: string;
+    billDate: string;
+    paymentMode: PaymentMode;
+    lines: InvoiceItem[];
+    notes?: string;
+  }) => {
+    if (data.tempNewSupplier) {
+      setTempNewSupplier({
+        ...data.tempNewSupplier,
+        state: company.state || 'Maharashtra',
+        stateCode: company.stateCode || '27',
+      });
+      setSelectedSupplierId('__TEMP_NEW__');
+      setIsInlineNewSupplierOpen(false);
+    } else {
+      setTempNewSupplier(null);
+      setSelectedSupplierId(data.supplierId);
+      setIsInlineNewSupplierOpen(false);
+    }
+    setSupplierBillNo(data.supplierBillNo);
+    setBillDate(data.billDate);
+    setPurchasePaymentMode(data.paymentMode);
+    setPurchaseLines(data.lines);
+    if (data.notes) setPurchaseNotes(data.notes);
+    setEditingPurchaseInvoice(null);
+    setIsNewPurchaseModalOpen(true);
   };
 
   // Open Edit Purchase Bill Modal (Requirement 2)
@@ -493,11 +601,38 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
       return;
     }
 
-    const supplier = suppliers.find(s => s.id === selectedSupplierId);
-    if (!supplier) return;
-
     setIsSavingPurchase(true);
     try {
+      // 1. Auto-create supplier if new (Requirement 1)
+      let supplier = suppliers.find(s => s.id === selectedSupplierId);
+
+      if ((!supplier || selectedSupplierId === '__TEMP_NEW__') && tempNewSupplier && onSaveParty) {
+        const newParty: Party = {
+          id: `supp-${Date.now()}`,
+          name: tempNewSupplier.name.trim(),
+          type: 'SUPPLIER',
+          phone: tempNewSupplier.phone?.trim() || '9999999999',
+          address: tempNewSupplier.address?.trim() || '',
+          gstin: tempNewSupplier.gstin ? tempNewSupplier.gstin.trim().toUpperCase() : undefined,
+          state: tempNewSupplier.state || company.state || 'Maharashtra',
+          stateCode: tempNewSupplier.stateCode || company.stateCode || '27',
+          creditLimit: 0,
+          currentBalance: 0,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        await onSaveParty(newParty);
+        supplier = newParty;
+        setSelectedSupplierId(newParty.id);
+        setTempNewSupplier(null);
+        showToast(`नया सप्लायर '${newParty.name}' सफलतापूर्वक सेव हुआ और खाता शुरू हो गया!`);
+      }
+
+      if (!supplier) {
+        showToast('कृपया सप्लायर चुनें या नया सप्लायर विवरण दर्ज करें', true);
+        return;
+      }
+
       const invNum = supplierBillNo.trim() || `PUR-${Date.now().toString().slice(-6)}`;
       const isPaid = purchasePaymentMode !== 'CREDIT';
 
@@ -577,10 +712,33 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
         showToast(`खरीद बिल सेव हुआ! ${purchaseLines.length} सामान का स्टॉक बढ़ गया।`);
       }
 
+      // 2. Update inventory items with new Purchase Rate AND Sale Price (Requirement 2 & 3)
+      if (onSaveItem) {
+        for (const line of purchaseLines) {
+          const existingItem = items.find(i => i.id === line.itemId);
+          if (existingItem) {
+            const newSalePrice = line.salePrice !== undefined && line.salePrice > 0
+              ? line.salePrice
+              : (existingItem.retailPrice || Math.round(line.unitPrice * 1.2));
+
+            const updatedItem: Item = {
+              ...existingItem,
+              purchasePrice: line.unitPrice, // Net Purchase Rate
+              retailPrice: newSalePrice,     // Sale Price
+              wholesalePrice: Math.round(newSalePrice * 0.95),
+              updatedAt: new Date().toISOString(),
+            };
+            await onSaveItem(updatedItem);
+          }
+        }
+      }
+
       setIsNewPurchaseModalOpen(false);
       setEditingPurchaseInvoice(null);
       setPurchaseLines([]);
       setSelectedSupplierId('');
+      setTempNewSupplier(null);
+      setIsInlineNewSupplierOpen(false);
       setSupplierBillNo('');
       setPurchaseNotes('');
     } catch (err: any) {
@@ -728,10 +886,20 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
 
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center gap-2">
+          {/* AI Photo Bill Scanner Button (Requirement 1) */}
+          <button
+            type="button"
+            onClick={() => setIsAiScannerModalOpen(true)}
+            className="px-4 py-2.5 bg-gradient-to-r from-indigo-600 via-purple-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 active:scale-98 text-white rounded-xl text-xs font-black transition shadow-md shadow-indigo-500/20 flex items-center gap-2 cursor-pointer border border-indigo-400/30"
+          >
+            <Camera className="w-4 h-4 text-indigo-200 animate-pulse" />
+            <span>📸 Scan & Auto-Fill Bill (फोटो से बिल भरें)</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setIsNewPurchaseModalOpen(true)}
-            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5"
+            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-98 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>+ Add Purchase Bill (खरीद दर्ज करें)</span>
@@ -884,14 +1052,25 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
               />
             </div>
 
-            <button
-              type="button"
-              onClick={() => setIsNewPurchaseModalOpen(true)}
-              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 self-start sm:self-auto"
-            >
-              <Plus className="w-4 h-4" />
-              <span>+ Add Purchase Bill</span>
-            </button>
+            <div className="flex items-center gap-2 self-start sm:self-auto">
+              <button
+                type="button"
+                onClick={() => setIsAiScannerModalOpen(true)}
+                className="px-3.5 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                <Camera className="w-4 h-4 text-indigo-200" />
+                <span>📸 Scan Bill (AI)</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setIsNewPurchaseModalOpen(true)}
+                className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Plus className="w-4 h-4" />
+                <span>+ Add Purchase Bill</span>
+              </button>
+            </div>
           </div>
 
           {purchaseInvoices.length === 0 ? (
@@ -903,14 +1082,24 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                   Click "+ Add Purchase Bill" to record stock purchase from suppliers. Stock will automatically increment!
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsNewPurchaseModalOpen(true)}
-                className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold transition inline-flex items-center gap-1.5"
-              >
-                <Plus className="w-4 h-4" />
-                <span>+ Create First Purchase Bill</span>
-              </button>
+              <div className="flex flex-wrap items-center justify-center gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => setIsAiScannerModalOpen(true)}
+                  className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-700 hover:to-blue-700 text-white rounded-xl text-xs font-bold transition inline-flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Camera className="w-4 h-4 text-indigo-200" />
+                  <span>📸 Scan Bill Photo (AI स्कैनर)</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsNewPurchaseModalOpen(true)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Plus className="w-4 h-4" />
+                  <span>+ Create First Purchase Bill</span>
+                </button>
+              </div>
             </div>
           ) : (
             <div className="divide-y divide-slate-100 overflow-x-auto">
@@ -1368,42 +1557,130 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                     : '+ Add Purchase Bill (सप्लायर से खरीद दर्ज करें)'}
                 </h3>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsNewPurchaseModalOpen(false);
-                  setEditingPurchaseInvoice(null);
-                  setPurchaseLines([]);
-                  setSelectedSupplierId('');
-                  setSupplierBillNo('');
-                  setPurchaseNotes('');
-                }}
-                className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2.5">
+                {!editingPurchaseInvoice && (
+                  <button
+                    type="button"
+                    onClick={() => setIsAiScannerModalOpen(true)}
+                    className="px-3 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-400/40 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Camera className="w-3.5 h-3.5 text-indigo-300" />
+                    <span>📸 Scan Bill Photo (फोटो से भरें)</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsNewPurchaseModalOpen(false);
+                    setEditingPurchaseInvoice(null);
+                    setPurchaseLines([]);
+                    setSelectedSupplierId('');
+                    setSupplierBillNo('');
+                    setPurchaseNotes('');
+                  }}
+                  className="w-7 h-7 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center justify-center cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             <form onSubmit={handleSavePurchaseBill} className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-4 text-xs">
               {/* Header Inputs: Supplier, Bill No, Date */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 bg-slate-50 p-3.5 rounded-2xl border border-slate-200">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-1">
-                    Select Supplier (सप्लायर चुनें) *
-                  </label>
-                  <select
-                    required
-                    value={selectedSupplierId}
-                    onChange={e => handleSelectSupplier(e.target.value)}
-                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none"
-                  >
-                    <option value="">-- Choose Supplier --</option>
-                    {suppliers.map(s => (
-                      <option key={s.id} value={s.id}>
-                        {s.name} ({s.phone})
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block font-bold text-slate-700">
+                      Select Supplier (सप्लायर चुनें) *
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsInlineNewSupplierOpen(!isInlineNewSupplierOpen);
+                        if (!isInlineNewSupplierOpen) {
+                          setSelectedSupplierId('__TEMP_NEW__');
+                        }
+                      }}
+                      className="text-[10px] text-blue-600 hover:text-blue-800 font-bold flex items-center gap-0.5 cursor-pointer"
+                    >
+                      {isInlineNewSupplierOpen ? 'सूची से चुनें' : '+ नया सप्लायर'}
+                    </button>
+                  </div>
+
+                  {!isInlineNewSupplierOpen ? (
+                    <select
+                      required
+                      value={selectedSupplierId}
+                      onChange={e => handleSelectSupplier(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:outline-none"
+                    >
+                      <option value="">-- Choose Supplier --</option>
+                      {tempNewSupplier && (
+                        <option value="__TEMP_NEW__" className="font-bold text-indigo-700">
+                          ✨ [नया सप्लायर] {tempNewSupplier.name} (बिल सेव पर ऑटो-क्रिएट होगा)
+                        </option>
+                      )}
+                      {suppliers.map(s => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.phone})
+                        </option>
+                      ))}
+                      <option value="__ADD_INLINE__">+ नया सप्लायर लिखें (Create Inline)</option>
+                    </select>
+                  ) : (
+                    <div className="space-y-1.5 p-2 bg-blue-50/80 rounded-xl border border-blue-200">
+                      <div className="text-[10px] font-bold text-blue-900">
+                        नया सप्लायर विवरण (बिल सेव पर खाता शुरू होगा):
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        placeholder="सप्लायर का नाम *"
+                        value={inlineSupplierName}
+                        onChange={e => {
+                          setInlineSupplierName(e.target.value);
+                          setTempNewSupplier({
+                            name: e.target.value,
+                            phone: inlineSupplierPhone,
+                            gstin: inlineSupplierGstin,
+                          });
+                          setSelectedSupplierId('__TEMP_NEW__');
+                        }}
+                        className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1 text-xs font-bold text-slate-900"
+                      />
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <input
+                          type="tel"
+                          placeholder="फोन नंबर"
+                          value={inlineSupplierPhone}
+                          onChange={e => {
+                            setInlineSupplierPhone(e.target.value);
+                            if (tempNewSupplier) {
+                              setTempNewSupplier({ ...tempNewSupplier, phone: e.target.value });
+                            }
+                          }}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-bold text-slate-900"
+                        />
+                        <input
+                          type="text"
+                          placeholder="GSTIN (यदि हो)"
+                          value={inlineSupplierGstin}
+                          onChange={e => {
+                            setInlineSupplierGstin(e.target.value.toUpperCase());
+                            if (tempNewSupplier) {
+                              setTempNewSupplier({ ...tempNewSupplier, gstin: e.target.value.toUpperCase() });
+                            }
+                          }}
+                          className="w-full bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-mono font-bold text-slate-900 uppercase"
+                        />
+                      </div>
+                    </div>
+                  )}
+                  {tempNewSupplier && !isInlineNewSupplierOpen && (
+                    <p className="text-[10px] text-indigo-700 font-bold mt-1">
+                      * यह सप्लायर बिल सेव होते ही डेटाबेस में सुरक्षित हो जाएगा।
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -1512,85 +1789,135 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                 )}
               </div>
 
-              {/* Purchase Lines Table (Requirement 1: Tax Exclusive / Price + GST) */}
-              <div className="border border-slate-200 rounded-2xl overflow-hidden">
-                <div className="bg-slate-100 px-3.5 py-2.5 font-bold text-[11px] text-slate-700 grid grid-cols-12 gap-2">
-                  <div className="col-span-3">Item Name (सामान)</div>
-                  <div className="col-span-1 text-center">Qty</div>
-                  <div className="col-span-2 text-right">Rate (₹) [Excl]</div>
-                  <div className="col-span-2 text-center">GST %</div>
-                  <div className="col-span-1 text-right">Taxable (₹)</div>
-                  <div className="col-span-1 text-right">GST (₹)</div>
-                  <div className="col-span-1 text-right">Total (₹)</div>
-                  <div className="col-span-1 text-center">✕</div>
-                </div>
-
+              {/* Purchase Lines Table (Requirement: MRP, Discount %, Net Rate, and Sale Price) */}
+              <div className="border border-slate-200 rounded-2xl overflow-hidden bg-white shadow-2xs">
                 {purchaseLines.length === 0 ? (
-                  <div className="p-6 text-center text-slate-400 text-xs">
-                    No items added to bill yet. Search items above to add.
+                  <div className="p-8 text-center text-slate-400 text-xs">
+                    No items added to bill yet. Search items above to add, or click &quot;Scan Bill Photo&quot; to auto-fill.
                   </div>
                 ) : (
-                  <div className="divide-y divide-slate-100 max-h-60 overflow-y-auto">
-                    {purchaseLines.map((line, idx) => (
-                      <div key={line.itemId} className="p-2.5 grid grid-cols-12 gap-2 items-center text-xs">
-                        <div className="col-span-3 min-w-0">
-                          <div className="font-bold text-slate-900 truncate">{line.itemName}</div>
-                          {line.hsn && <div className="text-[10px] text-slate-400 font-mono">HSN: {line.hsn}</div>}
-                        </div>
-                        <div className="col-span-1 flex items-center justify-center">
-                          <input
-                            type="number"
-                            min="1"
-                            value={line.quantity}
-                            onChange={e => handleUpdatePurchaseLine(idx, Number(e.target.value) || 1, line.unitPrice, line.taxRate)}
-                            className="w-12 text-center bg-slate-50 border border-slate-300 rounded-lg py-1 font-mono font-bold"
-                          />
-                        </div>
-                        <div className="col-span-2 flex items-center justify-end">
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={line.unitPrice}
-                            onChange={e => handleUpdatePurchaseLine(idx, line.quantity, Number(e.target.value) || 0, line.taxRate)}
-                            className="w-full text-right bg-slate-50 border border-slate-300 rounded-lg py-1 px-1.5 font-mono font-bold"
-                            title="Purchase Rate (Tax Exclusive)"
-                          />
-                        </div>
-                        <div className="col-span-2 flex items-center justify-center">
-                          <select
-                            value={line.taxRate}
-                            onChange={e => handleUpdatePurchaseLine(idx, line.quantity, line.unitPrice, Number(e.target.value))}
-                            className="w-full bg-slate-50 border border-slate-300 rounded-lg py-1 px-1 text-[11px] font-bold text-slate-800"
-                          >
-                            <option value={0}>0%</option>
-                            <option value={5}>5%</option>
-                            <option value={12}>12%</option>
-                            <option value={18}>18%</option>
-                            <option value={28}>28%</option>
-                          </select>
-                        </div>
-                        <div className="col-span-1 text-right font-mono font-medium text-slate-700 text-[11px]">
-                          {formatINR(line.taxableAmount)}
-                        </div>
-                        <div className="col-span-1 text-right font-mono font-semibold text-indigo-700 text-[11px]">
-                          {formatINR(line.cgstAmount + line.sgstAmount + line.igstAmount)}
-                        </div>
-                        <div className="col-span-1 text-right font-mono font-black text-slate-900 text-[11px]">
-                          {formatINR(line.totalAmount)}
-                        </div>
-                        <div className="col-span-1 text-center">
-                          <button
-                            type="button"
-                            onClick={() => handleUpdatePurchaseLine(idx, 0, 0)}
-                            className="text-slate-400 hover:text-red-600 transition"
-                            title="Remove line"
-                          >
-                            <Trash2 className="w-3.5 h-3.5 mx-auto" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
+                  <div className="overflow-x-auto max-h-72">
+                    <table className="w-full text-left text-xs min-w-[900px] divide-y divide-slate-200">
+                      <thead className="bg-slate-100 text-slate-700 font-bold uppercase tracking-wider text-[10px] sticky top-0 z-10 shadow-xs">
+                        <tr>
+                          <th className="p-2.5">Item Name (सामान)</th>
+                          <th className="p-2.5 w-16 text-center">Qty</th>
+                          <th className="p-2.5 w-24 text-right">MRP / List ₹</th>
+                          <th className="p-2.5 w-20 text-center">Disc %</th>
+                          <th className="p-2.5 w-24 text-right text-blue-900 bg-blue-50/50">Net Rate ₹</th>
+                          <th className="p-2.5 w-28 text-right bg-emerald-50 text-emerald-950 border-x border-emerald-200">
+                            Sale Price (बिक्री मूल्य) ✨
+                          </th>
+                          <th className="p-2.5 w-20 text-center">GST %</th>
+                          <th className="p-2.5 w-24 text-right">Taxable ₹</th>
+                          <th className="p-2.5 w-20 text-right">GST ₹</th>
+                          <th className="p-2.5 w-24 text-right font-black">Total ₹</th>
+                          <th className="p-2.5 w-10 text-center">✕</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 bg-white">
+                        {purchaseLines.map((line, idx) => (
+                          <tr key={line.itemId} className="hover:bg-slate-50/70 transition">
+                            <td className="p-2.5 min-w-[180px]">
+                              <div className="font-bold text-slate-900">{line.itemName}</div>
+                              {line.hsn && (
+                                <div className="text-[10px] text-slate-400 font-mono">HSN: {line.hsn}</div>
+                              )}
+                            </td>
+                            <td className="p-2.5 text-center">
+                              <input
+                                type="number"
+                                min="0.1"
+                                step="any"
+                                value={line.quantity}
+                                onChange={e => handleUpdatePurchaseLine(idx, 'qty', Number(e.target.value) || 0)}
+                                className="w-14 text-center bg-slate-50 border border-slate-300 rounded-lg py-1 font-mono font-bold"
+                              />
+                            </td>
+                            <td className="p-2.5 text-right">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={line.mrp ?? line.unitPrice}
+                                onChange={e => handleUpdatePurchaseLine(idx, 'mrp', Number(e.target.value) || 0)}
+                                className="w-20 text-right bg-slate-50 border border-slate-300 rounded-lg py-1 px-1.5 font-mono font-bold"
+                                title="Printed MRP or List Price"
+                              />
+                            </td>
+                            <td className="p-2.5 text-center">
+                              <input
+                                type="number"
+                                min="0"
+                                max="100"
+                                step="any"
+                                value={line.discountPercent ?? 0}
+                                onChange={e => handleUpdatePurchaseLine(idx, 'discount', Number(e.target.value) || 0)}
+                                className="w-16 text-center bg-slate-50 border border-slate-300 rounded-lg py-1 font-mono font-bold"
+                                title="Trade Discount % on MRP"
+                              />
+                            </td>
+                            <td className="p-2.5 text-right bg-blue-50/30">
+                              <input
+                                type="number"
+                                min="0"
+                                step="any"
+                                value={line.unitPrice}
+                                onChange={e => handleUpdatePurchaseLine(idx, 'netRate', Number(e.target.value) || 0)}
+                                className="w-22 text-right bg-blue-50/60 border border-blue-300 rounded-lg py-1 px-1.5 font-mono font-black text-blue-950"
+                                title="Net Purchase Rate (MRP minus Trade Discount)"
+                              />
+                            </td>
+                            <td className="p-2.5 text-right bg-emerald-50/60 border-x border-emerald-200">
+                              <div className="relative">
+                                <span className="absolute left-1.5 top-1 text-emerald-600 font-bold text-[10px]">₹</span>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="any"
+                                  value={line.salePrice ?? Math.round(line.unitPrice * 1.2)}
+                                  onChange={e => handleUpdatePurchaseLine(idx, 'salePrice', Number(e.target.value) || 0)}
+                                  className="w-22 pl-4 text-right bg-white border border-emerald-400 rounded-lg py-1 px-1.5 font-mono font-black text-emerald-950 shadow-2xs"
+                                  title="Retail Selling Price - will be saved to Inventory automatically on Save Purchase"
+                                />
+                              </div>
+                            </td>
+                            <td className="p-2.5 text-center">
+                              <select
+                                value={line.taxRate}
+                                onChange={e => handleUpdatePurchaseLine(idx, 'taxRate', Number(e.target.value))}
+                                className="w-16 bg-slate-50 border border-slate-300 rounded-lg py-1 px-1 text-[11px] font-bold text-slate-800"
+                              >
+                                <option value={0}>0%</option>
+                                <option value={5}>5%</option>
+                                <option value={12}>12%</option>
+                                <option value={18}>18%</option>
+                                <option value={28}>28%</option>
+                              </select>
+                            </td>
+                            <td className="p-2.5 text-right font-mono font-medium text-slate-700 text-[11px]">
+                              {formatINR(line.taxableAmount)}
+                            </td>
+                            <td className="p-2.5 text-right font-mono font-semibold text-indigo-700 text-[11px]">
+                              {formatINR(line.cgstAmount + line.sgstAmount + line.igstAmount)}
+                            </td>
+                            <td className="p-2.5 text-right font-mono font-black text-slate-900 text-[11px]">
+                              {formatINR(line.totalAmount)}
+                            </td>
+                            <td className="p-2.5 text-center">
+                              <button
+                                type="button"
+                                onClick={() => handleUpdatePurchaseLine(idx, 'remove', 0)}
+                                className="text-slate-400 hover:text-red-600 transition cursor-pointer"
+                                title="Remove line"
+                              >
+                                <Trash2 className="w-3.5 h-3.5 mx-auto" />
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>
@@ -2007,14 +2334,14 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                           type="number"
                           min="1"
                           value={line.quantity}
-                          onChange={e => handleUpdatePurchaseLine(idx, Number(e.target.value) || 1, line.unitPrice)}
+                          onChange={e => handleUpdatePurchaseLine(idx, 'qty', Number(e.target.value) || 1)}
                           className="w-12 text-center bg-white border border-slate-300 rounded py-0.5 font-bold"
                         />
                         <span className="font-mono font-bold text-slate-900">{formatINR(line.totalAmount)}</span>
                         <button
                           type="button"
-                          onClick={() => handleUpdatePurchaseLine(idx, 0, 0)}
-                          className="text-red-500 hover:text-red-700"
+                          onClick={() => handleUpdatePurchaseLine(idx, 'remove', 0)}
+                          className="text-red-500 hover:text-red-700 cursor-pointer"
                         >
                           ✕
                         </button>
@@ -2446,6 +2773,19 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
           </div>
         </div>
       )}
+
+      {/* AI Photo Bill Scanner Modal (Gemini Vision OCR & Smart Mapping) */}
+      <AiBillScannerModal
+        isOpen={isAiScannerModalOpen}
+        onClose={() => setIsAiScannerModalOpen(false)}
+        items={items}
+        suppliers={suppliers}
+        company={company}
+        onSaveItem={onSaveItem}
+        onSaveParty={onSaveParty}
+        onApplyScannedBill={handleApplyScannedBill}
+        showToast={showToast}
+      />
     </div>
   );
 };

@@ -49,6 +49,7 @@ export const items = pgTable('items', {
   currentStock: numeric('current_stock', { precision: 12, scale: 3 }).notNull().default('0'),
   lowStockThreshold: numeric('low_stock_threshold', { precision: 12, scale: 3 }).notNull().default('10'),
   batches: jsonb('batches'),
+  aliases: jsonb('aliases'),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 }, (table) => [

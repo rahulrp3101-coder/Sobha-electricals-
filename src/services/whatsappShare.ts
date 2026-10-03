@@ -54,7 +54,10 @@ export function generateWhatsAppInvoiceURL(invoice: Invoice, company: CompanyPro
   const phoneParam = cleanPhone.length === 10 ? `91${cleanPhone}` : cleanPhone;
   const encodedText = encodeURIComponent(lines.join('\n'));
 
-  return phoneParam ? `https://api.whatsapp.com/send?phone=${phoneParam}&text=${encodedText}` : `https://api.whatsapp.com/send?text=${encodedText}`;
+  // Target web.whatsapp.com directly for desktop POS
+  return phoneParam 
+    ? `https://web.whatsapp.com/send?phone=${phoneParam}&text=${encodedText}` 
+    : `https://web.whatsapp.com/send?text=${encodedText}`;
 }
 
 /**

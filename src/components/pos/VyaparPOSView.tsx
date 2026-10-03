@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Item, Party, Invoice, InvoiceItem, CompanyProfile, PaymentMode, DocumentType, PartyType 
+  Item, Party, Invoice, InvoiceItem, CompanyProfile, PaymentMode, DocumentType, PartyType, Expense, PaymentTransaction 
 } from '../../types';
 import { 
   calculateItemGST, calculateInvoiceTotals, formatINR 
@@ -9,14 +9,19 @@ import { PartySelectModal } from './PartySelectModal';
 import { FinalInvoiceModal } from './FinalInvoiceModal';
 import { BarcodeCameraModal } from './BarcodeCameraModal';
 import { DynamicUpiQrModal } from './DynamicUpiQrModal';
+import { DaySummaryModal } from '../reports/DaySummaryModal';
 import { UniversalCustomerSearch } from '../common/UniversalCustomerSearch';
 import { generateUpiQrDataUrl } from '../../services/upiQrService';
 import { playBarcodeBeep } from '../../services/soundEffects';
 import { useBarcodeScanner } from '../../hooks/useBarcodeScanner';
 import { 
+  generateInterleavedCostCode, 
+  calculateItemNetPurchaseCost 
+} from '../../services/secretCostCipher';
+import { 
   Plus, Search, Camera, Trash2, Printer, Check, ShoppingBag, 
   UserCheck, AlertTriangle, QrCode, CreditCard, Banknote, 
-  X, Clock, RotateCcw, FileText, ChevronRight, Smartphone, Sparkles
+  X, Clock, RotateCcw, FileText, ChevronRight, Smartphone, Sparkles, Users, BarChart3
 } from 'lucide-react';
 
 interface VyaparPOSViewProps {
@@ -24,6 +29,8 @@ interface VyaparPOSViewProps {
   parties: Party[];
   company: CompanyProfile;
   invoices: Invoice[];
+  expenses?: Expense[];
+  payments?: PaymentTransaction[];
   onSaveInvoice: (invoice: Invoice, printImmediate?: boolean, printFormat?: 'thermal' | 'a4') => Promise<Invoice>;
   onSaveParty: (party: Party) => Promise<void>;
   onSaveItem?: (item: Item) => Promise<void>;
@@ -38,6 +45,8 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
   parties,
   company,
   invoices,
+  expenses = [],
+  payments = [],
   onSaveInvoice,
   onSaveParty,
   onSaveItem,
@@ -75,10 +84,18 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
   const [editingQtyItemId, setEditingQtyItemId] = useState<string | null>(null);
   const [editingQtyVal, setEditingQtyVal] = useState<string>('');
 
+  // Fast Lookup Map for Inventory Items (for secret cost code calculation)
+  const itemsMap = useMemo(() => {
+    const map = new Map<string, Item>();
+    items.forEach(it => map.set(it.id, it));
+    return map;
+  }, [items]);
+
   // Mode Switch Toggle: 'TAX_INVOICE' vs 'ESTIMATE' (Requirement 1 & 2)
   const [billingMode, setBillingMode] = useState<'TAX_INVOICE' | 'ESTIMATE'>('TAX_INVOICE');
   const [estimateDeductStock, setEstimateDeductStock] = useState<boolean>(false);
   const [convertedFromEstimateId, setConvertedFromEstimateId] = useState<string | null>(null);
+  const [isDaySummaryOpen, setIsDaySummaryOpen] = useState<boolean>(false);
 
   // Pre-load draft estimate when converted from Estimates Register (Requirement 4)
   useEffect(() => {
@@ -600,18 +617,19 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       )}
 
       {/* ========================================================================= */}
-      {/* 2. TOP FIXED HEADER (COMPACT STRIP: CUSTOMER & ITEM SEARCH)               */}
+      {/* 2. TOP FIXED HEADER (CLEAN 2-ROW HEADER LAYOUT)                           */}
       {/* ========================================================================= */}
-      <div className="shrink-0 bg-white border-b border-slate-200 px-2.5 py-2 sm:px-4 sm:py-2.5 z-20 shadow-2xs">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-2">
-          {/* Left Side: Smart Universal Customer Search & Active Customer View (Requirement 1, 2, 3, 4) */}
-          <div className="flex items-center gap-2 min-w-0 flex-1">
-            <div className="w-8 h-8 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 flex items-center justify-center shrink-0 font-bold">
+      <div className="shrink-0 bg-white border-b border-slate-200 px-3 py-2 sm:px-4 sm:py-2.5 z-20 shadow-2xs space-y-2">
+        {/* ROW 1: ग्राहक विवरण और इनवॉइस मोड (Customer Search, Active Customer & Invoice Mode) */}
+        <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 w-full">
+          {/* Row 1 Left: Customer Search & Active Customer View */}
+          <div className="flex items-center gap-2 flex-1 min-w-0">
+            <div className="w-8 h-8 rounded-xl bg-blue-50 border border-blue-200 text-blue-700 flex items-center justify-center shrink-0 font-bold" title="ग्राहक (Customer)">
               <UserCheck className="w-4 h-4" />
             </div>
 
-            {/* Smart Universal Search Bar (Omni-Search, Live Card Dropdown, Keyboard Nav, Quick Add) */}
-            <div className="flex-1 min-w-[200px] max-w-xs sm:max-w-sm lg:max-w-md">
+            {/* Smart Universal Search Bar - Ample space so placeholder is fully visible */}
+            <div className="flex-1 min-w-[200px] sm:min-w-[280px] max-w-sm lg:max-w-md">
               <UniversalCustomerSearch
                 parties={parties}
                 selectedParty={selectedParty}
@@ -638,21 +656,21 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   showFlashToast(`नया ग्राहक जोड़ा गया: ${newParty.name}`);
                   return newParty;
                 }}
-                placeholder="ग्राहक खोजें (मोबाइल पूरा/अंतिम अंक, नाम, गाँव, दुकान)... [F2 / Alt+C]"
+                placeholder="ग्राहक खोजें (F2 / Alt+C)..."
                 shortcutHint="F2 / Alt+C"
                 isPOSMode={true}
                 filterType="CUSTOMER"
               />
             </div>
 
-            {/* Selected Customer Status Badge */}
-            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
+            {/* Selected Customer Status View - Fully separate container so it never overlaps search */}
+            <div className="flex items-center gap-2 bg-slate-100/90 border border-slate-200 rounded-xl px-2.5 py-1 shrink-0 shadow-2xs">
               <div className="flex flex-col text-left">
-                <span className="text-xs font-black text-slate-900 truncate max-w-[130px]">
+                <span className="text-xs font-black text-slate-900 whitespace-nowrap">
                   {selectedParty.name}
                 </span>
                 {selectedParty.phone && (
-                  <span className="text-[10px] text-slate-500 font-mono">
+                  <span className="text-[10px] text-slate-500 font-mono font-medium">
                     {selectedParty.phone}
                   </span>
                 )}
@@ -671,55 +689,29 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               )}
             </div>
 
-            {/* Mode Switch Toggle: Tax Invoice vs Estimate / Quotation (Requirement 1) */}
-            <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-300 shrink-0">
-              <button
-                type="button"
-                onClick={() => setBillingMode('TAX_INVOICE')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
-                  billingMode === 'TAX_INVOICE'
-                    ? 'bg-blue-600 text-white shadow-xs font-black'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-                }`}
-                title="पक्का टैक्स इनवॉइस मोड (Official GST Tax Invoice)"
-              >
-                <span>🧾 Tax Invoice</span>
-                <span className="hidden xl:inline text-[11px] font-normal">(पक्का बिल)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setBillingMode('ESTIMATE')}
-                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
-                  billingMode === 'ESTIMATE'
-                    ? 'bg-amber-500 text-white shadow-xs font-black'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
-                }`}
-                title="कच्चा बिल / कोटेशन मोड (Estimate / Quotation Slip)"
-              >
-                <span>📝 Estimate</span>
-                <span className="hidden xl:inline text-[11px] font-normal">(कच्चा पर्चा)</span>
-              </button>
-            </div>
-
             {/* Change customer list modal fallback button */}
             <button
               type="button"
               onClick={() => setIsPartyModalOpen(true)}
-              className="px-2 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold transition border border-slate-300 active:scale-95 shrink-0"
-              title="पार्टी सूची मोडल (F4)"
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition border border-slate-300 active:scale-95 shrink-0 flex items-center gap-1 cursor-pointer"
+              title="पार्टी सूची (F4)"
             >
-              <span>सूची</span>
+              <Users className="w-3.5 h-3.5 text-slate-600" />
+              <span className="hidden sm:inline">सूची</span>
             </button>
+          </div>
 
-            {/* Today Sales Quick Badge */}
+          {/* Row 1 Right: Today Sales, Reset Bill & Invoice Mode Toggle on Right */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Today Sales Quick Badge & Day Summary (Requirement 4) */}
             <button
               type="button"
-              onClick={() => setShowRecentBillsModal(true)}
-              className="hidden xl:flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-200 transition shrink-0"
-              title="View today's generated bills"
+              onClick={() => setIsDaySummaryOpen(true)}
+              className="hidden sm:flex items-center gap-1.5 px-3 py-1 bg-gradient-to-r from-blue-50 to-indigo-50 hover:from-blue-100 hover:to-indigo-100 text-blue-900 rounded-xl text-xs font-bold border border-blue-200 transition shrink-0 cursor-pointer shadow-2xs active:scale-95"
+              title="आज का पूरा हिसाब व कैश क्लोजिंग देखें (Day Summary)"
             >
-              <Clock className="w-3 h-3 text-slate-500" />
-              <span>Today: <strong>{formatINR(todaySalesTotal)}</strong> ({todayInvoices.length})</span>
+              <BarChart3 className="w-3.5 h-3.5 text-blue-600" />
+              <span>📊 आज का हिसाब: <strong className="font-mono text-blue-800">{formatINR(todaySalesTotal)}</strong> ({todayInvoices.length})</span>
             </button>
 
             {/* Clear Cart / Reset Bill button */}
@@ -727,161 +719,209 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               <button
                 type="button"
                 onClick={handleResetBill}
-                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition shrink-0"
+                className="px-2 py-1 text-slate-500 hover:text-red-600 hover:bg-red-50 border border-slate-200 rounded-xl transition shrink-0 flex items-center gap-1 text-xs font-semibold cursor-pointer"
                 title="Reset active bill (नया बिल)"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">रीसेट</span>
               </button>
+            )}
+
+            {/* Mode Switch Toggle: Tax Invoice vs Estimate / Quotation (Right aligned on Row 1) */}
+            <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-300 shrink-0 shadow-2xs">
+              <button
+                type="button"
+                onClick={() => setBillingMode('TAX_INVOICE')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                  billingMode === 'TAX_INVOICE'
+                    ? 'bg-blue-600 text-white shadow-xs font-black'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+                title="पक्का टैक्स इनवॉइस मोड (Official GST Tax Invoice)"
+              >
+                <span>🧾 Tax Invoice</span>
+                <span className="text-[10px] font-normal opacity-90 hidden sm:inline">(पक्का बिल)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBillingMode('ESTIMATE')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+                  billingMode === 'ESTIMATE'
+                    ? 'bg-amber-500 text-white shadow-xs font-black'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+                title="कच्चा बिल / कोटेशन मोड (Estimate / Quotation Slip)"
+              >
+                <span>📝 Estimate</span>
+                <span className="text-[10px] font-normal opacity-90 hidden sm:inline">(कच्चा पर्चा)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* ROW 2: सामान सर्च, स्कैनर व कंट्रोल्स (Search Item, Scanner, Qty, Disc%, Add Button) */}
+        <div className="flex flex-wrap sm:flex-nowrap items-center justify-between gap-2.5 w-full pt-1.5 border-t border-slate-100">
+          {/* Row 2 Left: Spacious Item Search Bar with Dropdown */}
+          <div className="relative flex-1 min-w-[200px]">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={searchQuery}
+              onChange={(e) => {
+                setSearchQuery(e.target.value);
+                setIsSearchDropdownOpen(true);
+              }}
+              onFocus={() => setIsSearchDropdownOpen(true)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault();
+                  if (searchResults.length > 0) {
+                    const first = searchResults[0];
+                    addItemToCartDirectly(first, itemQuantity, itemDiscountPercent);
+                    showFlashToast(`+${itemQuantity} ${first.name}`);
+                    setSearchQuery('');
+                    setSelectedSearchItem(null);
+                    setIsSearchDropdownOpen(false);
+                    setItemQuantity(1);
+                    setItemDiscountPercent(0);
+                  } else if (searchQuery.trim()) {
+                    handleOpenQuickAddForm(searchQuery.trim());
+                    setIsSearchDropdownOpen(false);
+                  }
+                } else if (e.key === 'Escape') {
+                  setIsSearchDropdownOpen(false);
+                }
+              }}
+              placeholder="Search Item / Scan Barcode (सामान का नाम या बारकोड)... [Enter दबाएं]"
+              className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-8 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-semibold shadow-2xs"
+            />
+
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchQuery('');
+                  setSelectedSearchItem(null);
+                }}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600 rounded-md cursor-pointer"
+                title="Clear item search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+
+            {/* Autocomplete Dropdown - cleanly positioned relative to Row 2's search container */}
+            {isSearchDropdownOpen && searchQuery.trim().length > 0 && (
+              <div className="absolute top-full left-0 right-0 mt-1.5 bg-white border border-slate-200 rounded-2xl shadow-2xl max-h-72 overflow-y-auto z-50 p-1 divide-y divide-slate-100 animate-in fade-in duration-100">
+                {searchResults.length > 0 ? (
+                  <>
+                    {searchResults.map((item) => (
+                      <div
+                        key={item.id}
+                        onClick={() => {
+                          addItemToCartDirectly(item, itemQuantity, itemDiscountPercent);
+                          showFlashToast(`+${itemQuantity} ${item.name}`);
+                          setSearchQuery('');
+                          setSelectedSearchItem(null);
+                          setIsSearchDropdownOpen(false);
+                          setItemQuantity(1);
+                          setItemDiscountPercent(0);
+                        }}
+                        className="p-2.5 hover:bg-blue-50 rounded-xl cursor-pointer flex items-center justify-between text-xs transition"
+                      >
+                        <div className="min-w-0 flex-1 pr-2">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-bold text-slate-900 truncate">{item.name}</span>
+                            {item.currentStock <= 3 && (
+                              <span className="inline-flex items-center gap-0.5 px-1.5 py-0.2 rounded text-[10px] font-extrabold bg-red-100 text-red-700 border border-red-200 shrink-0">
+                                ⚠️ Low Stock ({item.currentStock} {item.unit || 'Pcs'} शेष)
+                              </span>
+                            )}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono flex items-center gap-2">
+                            <span>SKU: {item.sku} {item.barcode ? `· ${item.barcode}` : ''}</span>
+                            {(() => {
+                              const netCost = calculateItemNetPurchaseCost(item);
+                              const secretCode = generateInterleavedCostCode(netCost);
+                              if (!secretCode) return null;
+                              return <span className="text-[10px] text-slate-400">· Ref: {secretCode}</span>;
+                            })()}
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <div className="font-mono font-bold text-blue-700">
+                            {formatINR(item.retailPrice || item.wholesalePrice)}
+                          </div>
+                          <div className="text-[10px] text-slate-400">
+                            Stock: {item.currentStock} {item.unit}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    {/* Quick Add Option */}
+                    <div
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        handleOpenQuickAddForm(searchQuery.trim());
+                        setIsSearchDropdownOpen(false);
+                      }}
+                      className="p-2.5 bg-blue-50/90 hover:bg-blue-100 text-blue-800 font-bold flex items-center justify-between text-xs cursor-pointer rounded-b-xl"
+                    >
+                      <span className="flex items-center gap-1.5">
+                        <Plus className="w-3.5 h-3.5 text-blue-600 stroke-[3]" />
+                        <span>+ Add &quot;{searchQuery.trim()}&quot; to Stock (नया सामान बनाएं)</span>
+                      </span>
+                      <span className="text-[10px] bg-blue-200 text-blue-900 px-1.5 py-0.5 rounded font-mono font-bold">New Item</span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="p-3 text-center space-y-2">
+                    <p className="text-xs text-slate-500">
+                      इन्वेंट्री में &quot;<strong className="text-slate-800">{searchQuery}</strong>&quot; नहीं मिला
+                    </p>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        handleOpenQuickAddForm(searchQuery.trim());
+                        setIsSearchDropdownOpen(false);
+                      }}
+                      className="w-full py-2 px-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1.5 shadow-xs transition cursor-pointer"
+                    >
+                      <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                      <span>+ नया सामान &quot;{searchQuery}&quot; इन्वेंट्री में जोड़ें</span>
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
 
-          {/* Right Side: Compact Item Search & Add Strip */}
-          <div className="flex items-center gap-1.5 shrink-0 min-w-0">
-            {/* Search Input with Autocomplete */}
-            <div className="relative flex-1 sm:w-72 md:w-80">
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5 pointer-events-none" />
-              <input
-                ref={searchInputRef}
-                type="text"
-                value={searchQuery}
-                onChange={(e) => {
-                  setSearchQuery(e.target.value);
-                  setIsSearchDropdownOpen(true);
-                }}
-                onFocus={() => setIsSearchDropdownOpen(true)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (searchResults.length > 0) {
-                      const first = searchResults[0];
-                      addItemToCartDirectly(first, itemQuantity, itemDiscountPercent);
-                      showFlashToast(`+${itemQuantity} ${first.name}`);
-                      setSearchQuery('');
-                      setSelectedSearchItem(null);
-                      setIsSearchDropdownOpen(false);
-                      setItemQuantity(1);
-                      setItemDiscountPercent(0);
-                    } else if (searchQuery.trim()) {
-                      handleOpenQuickAddForm(searchQuery.trim());
-                      setIsSearchDropdownOpen(false);
-                    }
-                  } else if (e.key === 'Escape') {
-                    setIsSearchDropdownOpen(false);
-                  }
-                }}
-                placeholder="Search Item / Scan Barcode (Enter)..."
-                className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-8 pr-7 py-1.5 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 font-semibold"
-              />
-
-              {searchQuery && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSearchQuery('');
-                    setSelectedSearchItem(null);
-                  }}
-                  className="absolute right-2 top-2 p-0.5 text-slate-400 hover:text-slate-600"
-                >
-                  <X className="w-3 h-3" />
-                </button>
-              )}
-
-              {/* Autocomplete Dropdown */}
-              {isSearchDropdownOpen && searchQuery.trim().length > 0 && (
-                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-slate-200 rounded-2xl shadow-2xl max-h-64 overflow-y-auto z-50 p-1 divide-y divide-slate-100">
-                  {searchResults.length > 0 ? (
-                    <>
-                      {searchResults.map((item) => (
-                        <div
-                          key={item.id}
-                          onClick={() => {
-                            addItemToCartDirectly(item, itemQuantity, itemDiscountPercent);
-                            showFlashToast(`+${itemQuantity} ${item.name}`);
-                            setSearchQuery('');
-                            setSelectedSearchItem(null);
-                            setIsSearchDropdownOpen(false);
-                            setItemQuantity(1);
-                            setItemDiscountPercent(0);
-                          }}
-                          className="p-2 hover:bg-blue-50 rounded-xl cursor-pointer flex items-center justify-between text-xs transition"
-                        >
-                          <div className="min-w-0 flex-1 pr-2">
-                            <div className="font-bold text-slate-900 truncate">{item.name}</div>
-                            <div className="text-[10px] text-slate-400 font-mono">
-                              SKU: {item.sku} {item.barcode ? `· ${item.barcode}` : ''}
-                            </div>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <div className="font-mono font-bold text-blue-700">
-                              {formatINR(item.retailPrice || item.wholesalePrice)}
-                            </div>
-                            <div className="text-[10px] text-slate-400">
-                              Stock: {item.currentStock} {item.unit}
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-
-                      {/* Quick Add Option */}
-                      <div
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleOpenQuickAddForm(searchQuery.trim());
-                          setIsSearchDropdownOpen(false);
-                        }}
-                        className="p-2 bg-blue-50/90 hover:bg-blue-100 text-blue-800 font-bold flex items-center justify-between text-xs cursor-pointer rounded-b-xl"
-                      >
-                        <span className="flex items-center gap-1">
-                          <Plus className="w-3.5 h-3.5 text-blue-600 stroke-[3]" />
-                          <span>+ Add &quot;{searchQuery.trim()}&quot; to Stock</span>
-                        </span>
-                        <span className="text-[10px] bg-blue-200 text-blue-900 px-1.5 py-0.2 rounded font-mono">New Item</span>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="p-3 text-center space-y-1.5">
-                      <p className="text-xs text-slate-500">
-                        Item not found for &quot;<strong className="text-slate-800">{searchQuery}</strong>&quot;
-                      </p>
-                      <button
-                        type="button"
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          handleOpenQuickAddForm(searchQuery.trim());
-                          setIsSearchDropdownOpen(false);
-                        }}
-                        className="w-full py-1.5 px-3 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl flex items-center justify-center gap-1 shadow-xs transition"
-                      >
-                        <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                        <span>+ Add New Item &quot;{searchQuery}&quot; (नया आइटम जोड़ें)</span>
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
+          {/* Row 2 Right: Camera, Quantity (Qty: - 1 +), Discount % (D%: 0), and + Add Button */}
+          <div className="flex items-center gap-2 shrink-0">
             {/* Camera Barcode Button */}
             <button
               type="button"
               onClick={() => setShowCameraScanner(true)}
-              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center gap-1 shrink-0"
+              className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer shadow-2xs"
               title="Camera Barcode Scanner"
             >
-              <Camera className="w-3.5 h-3.5 text-slate-600" />
+              <Camera className="w-4 h-4 text-slate-700" />
               <span className="hidden sm:inline">Camera</span>
             </button>
 
-            {/* Quantity Input (Requirement 2.3: Preset Quantity for Scan & Add) */}
+            {/* Quantity Input (Qty: - 1 +) */}
             <div 
-              className="flex items-center bg-slate-50 border border-slate-300 rounded-xl px-1 py-0.5 shrink-0 focus-within:border-blue-500 focus-within:bg-white transition"
-              title="स्कैन मात्रा: यदि यहाँ 5 डालते हैं, तो बारकोड स्कैन करने पर सीधे 5 मात्रा जुड़ेगी"
+              className="flex items-center bg-slate-50 border border-slate-300 rounded-xl px-1.5 py-1 shrink-0 focus-within:border-blue-500 focus-within:bg-white transition shadow-2xs"
+              title="मात्रा (Quantity) सेट करें"
             >
-              <span className="text-[10px] text-slate-500 font-bold px-1 hidden sm:inline">Qty:</span>
+              <span className="text-[11px] text-slate-500 font-bold px-1 hidden sm:inline">Qty:</span>
               <button
                 type="button"
                 onClick={() => setItemQuantity(Math.max(1, itemQuantity - 1))}
-                className="w-5 h-5 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs shadow-2xs cursor-pointer active:scale-95"
+                className="w-6 h-6 bg-white hover:bg-slate-200 rounded-lg text-slate-800 font-black flex items-center justify-center text-xs shadow-2xs cursor-pointer active:scale-95 border border-slate-200"
               >
                 -
               </button>
@@ -900,21 +940,24 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                     searchInputRef.current?.focus();
                   }
                 }}
-                className="w-8 text-center bg-transparent font-mono font-bold text-xs text-slate-900 focus:outline-none"
-                title="स्कैन मात्रा डालें (उदा. 5) और बारकोड स्कैन करें"
+                className="w-9 text-center bg-transparent font-mono font-black text-xs sm:text-sm text-slate-900 focus:outline-none"
+                title="सामान की संख्या"
               />
               <button
                 type="button"
                 onClick={() => setItemQuantity(itemQuantity + 1)}
-                className="w-5 h-5 bg-white hover:bg-slate-200 rounded text-slate-800 font-bold flex items-center justify-center text-xs shadow-2xs cursor-pointer active:scale-95"
+                className="w-6 h-6 bg-white hover:bg-slate-200 rounded-lg text-slate-800 font-black flex items-center justify-center text-xs shadow-2xs cursor-pointer active:scale-95 border border-slate-200"
               >
                 +
               </button>
             </div>
 
             {/* Discount % Input */}
-            <div className="flex items-center bg-slate-50 border border-slate-300 rounded-xl px-1.5 py-1 shrink-0 w-16 sm:w-18">
-              <span className="text-[10px] text-slate-400 font-bold mr-0.5">D%:</span>
+            <div 
+              className="flex items-center bg-slate-50 border border-slate-300 rounded-xl px-2 py-1 shrink-0 w-20 sm:w-22 shadow-2xs focus-within:border-blue-500 focus-within:bg-white transition"
+              title="छूट प्रतिशत (Discount %)"
+            >
+              <span className="text-[11px] text-slate-500 font-bold mr-1">D%:</span>
               <input
                 type="number"
                 min="0"
@@ -922,7 +965,7 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                 value={itemDiscountPercent || ''}
                 placeholder="0"
                 onChange={(e) => setItemDiscountPercent(Number(e.target.value) || 0)}
-                className="w-full text-center bg-transparent font-mono font-bold text-xs text-slate-900 focus:outline-none"
+                className="w-full text-center bg-transparent font-mono font-black text-xs sm:text-sm text-slate-900 focus:outline-none"
               />
             </div>
 
@@ -945,11 +988,11 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   searchInputRef.current?.focus();
                 }
               }}
-              className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1 shrink-0"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white rounded-xl text-xs sm:text-sm font-black transition shadow-xs flex items-center gap-1.5 shrink-0 cursor-pointer"
               title="Add item to bill"
             >
-              <Plus className="w-3.5 h-3.5 stroke-[3]" />
-              <span>+ Add (जोड़ें)</span>
+              <Plus className="w-4 h-4 stroke-[3]" />
+              <span>Add</span>
             </button>
           </div>
         </div>
@@ -1026,12 +1069,39 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                       </td>
 
                       <td className="py-2 px-3">
-                        <div className="font-extrabold text-slate-900 text-xs sm:text-sm">
-                          {line.itemName}
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="font-extrabold text-slate-900 text-xs sm:text-sm">
+                            {line.itemName}
+                          </span>
+                          {(() => {
+                            const originalItem = itemsMap.get(line.itemId);
+                            if (originalItem && originalItem.currentStock <= 3) {
+                              return (
+                                <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-extrabold bg-red-100 text-red-700 border border-red-200 shrink-0">
+                                  ⚠️ Low Stock ({originalItem.currentStock} {originalItem.unit || 'Pcs'} शेष)
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
-                        <div className="text-[10px] text-slate-400 font-mono flex items-center gap-2">
+                        <div className="text-[10px] text-slate-400 font-mono flex flex-wrap items-center gap-x-2 gap-y-0.5">
                           {line.hsn && <span>HSN: {line.hsn}</span>}
                           <span>Unit: {line.unit || 'PCS'}</span>
+                          {(() => {
+                            const originalItem = itemsMap.get(line.itemId);
+                            const netCost = calculateItemNetPurchaseCost(originalItem);
+                            const secretCode = generateInterleavedCostCode(netCost);
+                            if (!secretCode) return null;
+                            return (
+                              <span 
+                                className="text-[11px] text-slate-400 font-mono font-medium tracking-wide"
+                                title="गोपनीय खरीद लागत कोड (Interleaved Secret Cost Code - केवल ऑपरेटर स्क्रीन के लिए)"
+                              >
+                                Ref: {secretCode}
+                              </span>
+                            );
+                          })()}
                         </div>
                       </td>
 
@@ -1272,6 +1342,19 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                   <span className="text-[10px] text-amber-800 font-medium hidden sm:inline">(Deduct stock)</span>
                 </span>
               </label>
+            )}
+
+            {/* Customer Credit Warning Alert (Requirement 5) */}
+            {paymentMode === 'CREDIT' && selectedParty.currentBalance > 0 && (
+              <div 
+                className="flex items-center gap-1.5 px-3 py-2 bg-red-50 border-2 border-red-400 rounded-xl text-red-900 text-xs font-bold shadow-xs animate-pulse select-none"
+                title="Customer Pending Balance Warning"
+              >
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>
+                  चेतावनी: इस ग्राहक पर पिछला बकाया <strong>{formatINR(selectedParty.currentBalance)}</strong> बाकी है।
+                </span>
+              </div>
             )}
 
             {/* BIG SAVE & PRINT BILL BUTTON */}
@@ -1564,6 +1647,17 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* Day-End Cash & Sales Summary Modal (Requirement 4) */}
+      <DaySummaryModal
+        isOpen={isDaySummaryOpen}
+        onClose={() => setIsDaySummaryOpen(false)}
+        invoices={invoices}
+        payments={payments}
+        expenses={expenses}
+        items={items}
+        company={company}
+      />
     </div>
   );
 };
