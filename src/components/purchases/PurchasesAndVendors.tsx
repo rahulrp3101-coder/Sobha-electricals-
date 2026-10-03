@@ -8,7 +8,7 @@ import {
   Plus, Search, Building2, Users, FileText, ArrowDownLeft, 
   ArrowUpRight, RotateCcw, AlertTriangle, Check, Printer, 
   Phone, MapPin, Hash, Trash2, X, ChevronRight, DollarSign,
-  Calendar, CreditCard, ShoppingBag, Eye
+  Calendar, CreditCard, ShoppingBag, Eye, Edit
 } from 'lucide-react';
 
 interface PurchasesAndVendorsProps {
@@ -87,6 +87,119 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
   const showToast = (msg: string, isError = false) => {
     setToastMsg({ msg, isError });
     setTimeout(() => setToastMsg(null), 3500);
+  };
+
+  // Add New Item in Purchase Form State (Requirement 3)
+  const [isAddNewItemModalOpen, setIsAddNewItemModalOpen] = useState(false);
+  const [newItemName, setNewItemName] = useState('');
+  const [newItemPurchasePrice, setNewItemPurchasePrice] = useState<number | ''>('');
+  const [newItemSalePrice, setNewItemSalePrice] = useState<number | ''>('');
+  const [newItemTaxRate, setNewItemTaxRate] = useState<number>(0);
+  const [newItemHsn, setNewItemHsn] = useState('');
+  const [newItemUnit, setNewItemUnit] = useState('PCS');
+  const [newItemCategory, setNewItemCategory] = useState('General');
+  const [newItemInitialStock, setNewItemInitialStock] = useState<number>(0);
+  const [isSavingNewItem, setIsSavingNewItem] = useState(false);
+
+  // Edit Supplier Form State (Requirement 1)
+  const [supplierToEdit, setSupplierToEdit] = useState<Party | null>(null);
+  const [editSupplierName, setEditSupplierName] = useState('');
+  const [editSupplierPhone, setEditSupplierPhone] = useState('');
+  const [editSupplierAddress, setEditSupplierAddress] = useState('');
+  const [editSupplierGstin, setEditSupplierGstin] = useState('');
+  const [editSupplierOpeningBalance, setEditSupplierOpeningBalance] = useState<number>(0);
+  const [isSavingEditSupplier, setIsSavingEditSupplier] = useState(false);
+
+  const handleOpenEditSupplier = (supplier: Party) => {
+    setSupplierToEdit(supplier);
+    setEditSupplierName(supplier.name || '');
+    setEditSupplierPhone(supplier.phone || '');
+    setEditSupplierAddress(supplier.address || '');
+    setEditSupplierGstin(supplier.gstin || '');
+    setEditSupplierOpeningBalance(supplier.openingBalance || 0);
+  };
+
+  const handleSaveEditSupplier = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!supplierToEdit || !editSupplierName.trim()) return;
+
+    setIsSavingEditSupplier(true);
+    try {
+      const oldOpening = supplierToEdit.openingBalance || 0;
+      const newOpening = Number(editSupplierOpeningBalance) || 0;
+      const diff = newOpening - oldOpening;
+
+      const updatedSupplier: Party = {
+        ...supplierToEdit,
+        name: editSupplierName.trim(),
+        phone: editSupplierPhone.trim(),
+        address: editSupplierAddress.trim(),
+        gstin: editSupplierGstin ? editSupplierGstin.trim().toUpperCase() : undefined,
+        openingBalance: newOpening,
+        currentBalance: (supplierToEdit.currentBalance || 0) + diff,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await onSaveParty(updatedSupplier);
+      showToast(`सप्लायर '${updatedSupplier.name}' का विवरण सफलतापूर्वक अपडेट हुआ!`);
+      setSupplierToEdit(null);
+    } catch (err: any) {
+      console.error('Failed to update supplier:', err);
+      showToast('सप्लायर अपडेट करने में त्रुटि: ' + (err.message || 'Error'), true);
+    } finally {
+      setIsSavingEditSupplier(false);
+    }
+  };
+
+  const handleCreateNewItemForPurchase = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newItemName.trim() || !onSaveItem) return;
+
+    setIsSavingNewItem(true);
+    try {
+      const pPrice = Number(newItemPurchasePrice) || 0;
+      const sPrice = Number(newItemSalePrice) || pPrice;
+      const tax = Number(newItemTaxRate) || 0;
+      const initStock = Number(newItemInitialStock) || 0;
+
+      const createdItem: Item = {
+        id: `itm-${Date.now()}`,
+        name: newItemName.trim(),
+        category: newItemCategory.trim() || 'General',
+        sku: `SKU-${Date.now().toString().slice(-6)}`,
+        purchasePrice: pPrice,
+        retailPrice: sPrice,
+        wholesalePrice: sPrice,
+        taxRate: tax,
+        taxInclusive: true,
+        hsn: newItemHsn.trim() || '19053100',
+        unit: (newItemUnit.trim() || 'PCS') as any,
+        currentStock: initStock,
+        lowStockThreshold: 5,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await onSaveItem(createdItem);
+      // Immediately add to current purchase bill
+      handleAddPurchaseLine(createdItem);
+      setPurchaseItemSearch('');
+      setIsAddNewItemModalOpen(false);
+      showToast(`नया सामान '${createdItem.name}' सफलतापूर्वक बन गया और बिल में जुड़ गया!`);
+
+      // Reset form
+      setNewItemName('');
+      setNewItemPurchasePrice('');
+      setNewItemSalePrice('');
+      setNewItemTaxRate(0);
+      setNewItemHsn('');
+      setNewItemInitialStock(0);
+    } catch (err: any) {
+      console.error('Failed to add new item:', err);
+      showToast('नया आइटम जोड़ने में त्रुटि: ' + (err.message || 'Error'), true);
+    } finally {
+      setIsSavingNewItem(false);
+    }
   };
 
   // Filtered Suppliers
@@ -772,6 +885,16 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                     <div className="flex items-center gap-1.5">
                       <button
                         type="button"
+                        onClick={() => handleOpenEditSupplier(supplier)}
+                        className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
+                        title="Edit Supplier Details (सप्लायर विवरण बदलें)"
+                      >
+                        <Edit className="w-3.5 h-3.5 text-blue-600" />
+                        <span>Edit</span>
+                      </button>
+
+                      <button
+                        type="button"
                         onClick={() => {
                           setPaymentOutPartyId(supplier.id);
                           setPaymentOutAmount(balanceAmt);
@@ -1092,16 +1215,31 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                     <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
                     <input
                       type="text"
-                      placeholder="Type item name to add..."
+                      placeholder="Type item name to add (सामान का नाम खोजें)..."
                       value={purchaseItemSearch}
                       onChange={e => setPurchaseItemSearch(e.target.value)}
                       className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none"
                     />
                   </div>
+
+                  {onSaveItem && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setNewItemName(purchaseItemSearch.trim());
+                        setIsAddNewItemModalOpen(true);
+                      }}
+                      className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 shrink-0 shadow-xs active:scale-95 cursor-pointer"
+                      title="नया आइटम बनाएं जो इन्वेंटरी में पहले से नहीं है"
+                    >
+                      <Plus className="w-4 h-4 stroke-[2.5]" />
+                      <span>+ Add New Item (+ नया सामान)</span>
+                    </button>
+                  )}
                 </div>
 
                 {purchaseItemSearch && (
-                  <div className="bg-white border border-slate-200 rounded-xl max-h-36 overflow-y-auto divide-y divide-slate-100 shadow-sm">
+                  <div className="bg-white border border-slate-200 rounded-xl max-h-48 overflow-y-auto divide-y divide-slate-100 shadow-sm">
                     {items
                       .filter(i => i.name.toLowerCase().includes(purchaseItemSearch.toLowerCase()))
                       .slice(0, 6)
@@ -1116,13 +1254,32 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                         >
                           <div>
                             <span className="font-bold text-slate-900">{item.name}</span>
-                            <span className="text-[10px] text-slate-400 ml-2">Stock: {item.currentStock}</span>
+                            <span className="text-[10px] text-slate-400 ml-2">Stock: {item.currentStock} {item.unit}</span>
                           </div>
                           <span className="font-mono text-slate-700 font-bold">
                             Purchase: {formatINR(item.purchasePrice || item.retailPrice)}
                           </span>
                         </div>
                       ))}
+
+                    {/* Quick Add Option at bottom of search dropdown (Requirement 3) */}
+                    {onSaveItem && (
+                      <div
+                        onClick={() => {
+                          setNewItemName(purchaseItemSearch.trim());
+                          setIsAddNewItemModalOpen(true);
+                        }}
+                        className="p-2.5 bg-emerald-50 hover:bg-emerald-100 cursor-pointer flex items-center justify-between text-xs font-bold text-emerald-800 border-t border-emerald-200 transition"
+                      >
+                        <div className="flex items-center gap-1.5">
+                          <Plus className="w-4 h-4 text-emerald-700 stroke-[2.5]" />
+                          <span>+ नया सामान जोड़ें: &quot;{purchaseItemSearch}&quot;</span>
+                        </div>
+                        <span className="text-[10px] bg-emerald-200/60 px-2 py-0.5 rounded text-emerald-900 font-normal">
+                          Click to create &amp; add to bill
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -1586,6 +1743,313 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
                 </div>
               )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================= */}
+      {/* MODAL 1: ADD NEW ITEM FOR PURCHASE BILL (Requirement 3) */}
+      {/* ============================================================= */}
+      {isAddNewItemModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in">
+          <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in zoom-in-95 duration-200 text-slate-900">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-emerald-700 text-white">
+              <div className="flex items-center gap-2">
+                <Plus className="w-5 h-5 text-white stroke-[2.5]" />
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base">
+                    + Add New Item for Purchase (+ नया सामान जोड़ें)
+                  </h3>
+                  <p className="text-[11px] text-emerald-100">
+                    सामान तुरंत इन्वेंटरी में जुड़ेगा और चालू खरीद बिल में भी सेलेक्ट हो जाएगा
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsAddNewItemModalOpen(false)}
+                className="p-1 rounded-lg text-emerald-200 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateNewItemForPurchase} className="p-4 sm:p-5 space-y-3.5 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Item Name (सामान का नाम) *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={newItemName}
+                  onChange={e => setNewItemName(e.target.value)}
+                  placeholder="उदा. Fortune Oil 1L / Parle-G 100g"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Purchase Price (खरीद दर ₹) *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2 font-bold text-slate-400">₹</span>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      value={newItemPurchasePrice}
+                      onChange={e => setNewItemPurchasePrice(e.target.value === '' ? '' : Number(e.target.value))}
+                      placeholder="120.00"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-7 pr-3 py-2 text-xs font-mono font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Sale Price / MRP (बिक्री दर ₹) *
+                  </label>
+                  <div className="relative">
+                    <span className="absolute left-3 top-2 font-bold text-slate-400">₹</span>
+                    <input
+                      type="number"
+                      step="any"
+                      required
+                      value={newItemSalePrice}
+                      onChange={e => setNewItemSalePrice(e.target.value === '' ? '' : Number(e.target.value))}
+                      placeholder="140.00"
+                      className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-7 pr-3 py-2 text-xs font-mono font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    GST Tax Rate (टैक्स दर %)
+                  </label>
+                  <select
+                    value={newItemTaxRate}
+                    onChange={e => setNewItemTaxRate(Number(e.target.value))}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                  >
+                    <option value={0}>0% (Tax Exempt / Nil)</option>
+                    <option value={5}>5% GST</option>
+                    <option value={12}>12% GST</option>
+                    <option value={18}>18% GST (Standard)</option>
+                    <option value={28}>28% GST</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    HSN Code (एचएसएन कोड)
+                  </label>
+                  <input
+                    type="text"
+                    value={newItemHsn}
+                    onChange={e => setNewItemHsn(e.target.value)}
+                    placeholder="19053100"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-3 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Unit (इकाई)
+                  </label>
+                  <select
+                    value={newItemUnit}
+                    onChange={e => setNewItemUnit(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                  >
+                    <option value="PCS">PCS (पीस)</option>
+                    <option value="KG">KG (किलो)</option>
+                    <option value="LTR">LTR (लीटर)</option>
+                    <option value="BOX">BOX (डिब्बा)</option>
+                    <option value="PKT">PKT (पैकेट)</option>
+                    <option value="MTR">MTR (मीटर)</option>
+                    <option value="DOZEN">DOZEN (दर्जन)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Category (श्रेणी)
+                  </label>
+                  <input
+                    type="text"
+                    value={newItemCategory}
+                    onChange={e => setNewItemCategory(e.target.value)}
+                    placeholder="General / किराना"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Initial Stock (मौजूदा)
+                  </label>
+                  <input
+                    type="number"
+                    value={newItemInitialStock}
+                    onChange={e => setNewItemInitialStock(Number(e.target.value))}
+                    placeholder="0"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-mono font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-emerald-600"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setIsAddNewItemModalOpen(false)}
+                  disabled={isSavingNewItem}
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
+                >
+                  रद्द करें (Cancel)
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingNewItem}
+                  className="flex-1 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Check className="w-4 h-4 stroke-[2.5]" />
+                  <span>{isSavingNewItem ? 'सेव हो रहा है...' : 'सेव करें व बिल में जोड़ें'}</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================= */}
+      {/* MODAL 2: EDIT SUPPLIER MODAL (Requirement 1) */}
+      {/* ============================================================= */}
+      {supplierToEdit && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in">
+          <div className="relative w-full max-w-lg bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in zoom-in-95 duration-200 text-slate-900">
+            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-blue-600 text-white">
+              <div className="flex items-center gap-2">
+                <Edit className="w-5 h-5 text-white" />
+                <div>
+                  <h3 className="font-extrabold text-sm sm:text-base">
+                    ✏️ Edit Supplier Details (सप्लायर विवरण बदलें)
+                  </h3>
+                  <p className="text-[11px] text-blue-100">IndexedDB और Supabase दोनों में तुरंत सिंक होगा</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSupplierToEdit(null)}
+                className="p-1 rounded-lg text-blue-200 hover:text-white"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditSupplier} className="p-4 sm:p-5 space-y-3.5 text-xs">
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Supplier Name (सप्लायर / फर्म का नाम) *
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editSupplierName}
+                  onChange={e => setEditSupplierName(e.target.value)}
+                  placeholder="उदा. Sharma Wholesale Traders"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    Mobile Number (फ़ोन / WhatsApp)
+                  </label>
+                  <input
+                    type="tel"
+                    value={editSupplierPhone}
+                    onChange={e => setEditSupplierPhone(e.target.value)}
+                    placeholder="98XXXXXXXX"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-semibold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                  />
+                </div>
+
+                <div>
+                  <label className="block font-bold text-slate-700 mb-1">
+                    GSTIN Number (GSTIN)
+                  </label>
+                  <input
+                    type="text"
+                    value={editSupplierGstin}
+                    onChange={e => setEditSupplierGstin(e.target.value)}
+                    placeholder="23AAAAA0000A1Z5"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono uppercase text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Address (पता / स्थान)
+                </label>
+                <textarea
+                  rows={2}
+                  value={editSupplierAddress}
+                  onChange={e => setEditSupplierAddress(e.target.value)}
+                  placeholder="सप्लायर का गोदाम या दुकान का पता..."
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 resize-none"
+                />
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-1">
+                  Opening Khata Balance (शुरुआती बकाया ₹)
+                </label>
+                <div className="relative">
+                  <span className="absolute left-3 top-2 font-bold text-slate-400">₹</span>
+                  <input
+                    type="number"
+                    step="any"
+                    value={editSupplierOpeningBalance}
+                    onChange={e => setEditSupplierOpeningBalance(Number(e.target.value))}
+                    placeholder="0.00"
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-7 pr-3 py-2 text-xs font-mono font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                  />
+                </div>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  * शुरुआती बकाया बदलने से वर्तमान देना बाकी बैलेंस अपने आप समायोजित हो जाएगा।
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-3 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setSupplierToEdit(null)}
+                  disabled={isSavingEditSupplier}
+                  className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
+                >
+                  रद्द करें (Cancel)
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingEditSupplier}
+                  className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                >
+                  <Check className="w-4 h-4 stroke-[2.5]" />
+                  <span>{isSavingEditSupplier ? 'अपडेट हो रहा है...' : 'सुरक्षित करें (Update Supplier)'}</span>
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

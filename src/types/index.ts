@@ -6,6 +6,7 @@ export type DocumentType =
   | 'SALES_INVOICE'
   | 'PURCHASE_BILL'
   | 'QUOTATION'
+  | 'ESTIMATE'
   | 'DELIVERY_CHALLAN'
   | 'CREDIT_NOTE'
   | 'DEBIT_NOTE';
@@ -140,6 +141,9 @@ export interface Invoice {
   splitDetails?: SplitPayment;
   notes?: string;
   status: 'PAID' | 'PARTIAL' | 'UNPAID' | 'CANCELLED';
+  deductStock?: boolean; // When documentType is ESTIMATE / QUOTATION: whether to reduce inventory stock
+  isConvertedToInvoice?: boolean; // When an estimate has been converted into a final Tax Invoice
+  convertedInvoiceId?: string; // ID of the resulting Tax Invoice
   isSynced: boolean; // offline sync flag
   createdAt: string;
   updatedAt: string;

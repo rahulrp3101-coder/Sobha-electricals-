@@ -62,8 +62,14 @@ export class ThermalPrinterEngine {
 
     // ESC a 0 : Align Left
     append(0x1b, 0x61, 0x00);
-    appendLine(`INVOICE: ${invoice.invoiceNumber}`);
-    appendLine(`Date: ${invoice.date}   Mode: ${invoice.paymentMode}`);
+    const isEstimate = invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION';
+    if (isEstimate) {
+      appendLine('*** ESTIMATE / QUOTATION (कच्चा पर्चा) ***');
+      appendLine(`EST NO: ${invoice.invoiceNumber}`);
+    } else {
+      appendLine(`INVOICE: ${invoice.invoiceNumber}`);
+    }
+    appendLine(`Date: ${invoice.date}   Mode: ${isEstimate ? 'ESTIMATE' : invoice.paymentMode}`);
     appendLine(`Customer: ${invoice.partyName}`);
     if (invoice.partyPhone && invoice.partyPhone !== '9999999999') {
       appendLine(`Phone: ${invoice.partyPhone}`);

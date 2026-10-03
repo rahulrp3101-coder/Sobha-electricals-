@@ -58,7 +58,10 @@ export const InvoiceList: React.FC<InvoiceListProps> = ({
       inv.partyName.toLowerCase().includes(searchQuery.toLowerCase()) ||
       (inv.partyGstin && inv.partyGstin.toLowerCase().includes(searchQuery.toLowerCase()));
 
-    const matchesDoc = docFilter === 'ALL' || inv.documentType === docFilter;
+    const matchesDoc = 
+      docFilter === 'ALL' || 
+      inv.documentType === docFilter || 
+      (docFilter === 'QUOTATION' && (inv.documentType === 'QUOTATION' || inv.documentType === 'ESTIMATE'));
     const matchesStatus = statusFilter === 'ALL' || inv.status === statusFilter;
 
     return matchesSearch && matchesDoc && matchesStatus;
@@ -254,7 +257,11 @@ export const InvoiceList: React.FC<InvoiceListProps> = ({
                         {onDeleteInvoice && (
                           <button
                             type="button"
-                            onClick={() => setInvoiceToDelete(inv)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setInvoiceToDelete(inv);
+                            }}
                             className="flex items-center gap-1 px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-bold transition shadow-2xs active:scale-95 cursor-pointer"
                             title="Delete Invoice (इनवॉइस हटाएं व स्टॉक रीसेट करें)"
                           >

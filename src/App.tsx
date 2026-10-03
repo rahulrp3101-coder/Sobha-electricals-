@@ -20,6 +20,7 @@ import { BottomNav } from './components/common/BottomNav';
 import { OfflineBanner } from './components/common/OfflineBanner';
 import { VyaparPOSView } from './components/pos/VyaparPOSView';
 import { InvoiceList } from './components/invoices/InvoiceList';
+import { EstimatesRegister } from './components/estimates/EstimatesRegister';
 import { InvoiceForm } from './components/invoices/InvoiceForm';
 import { A4InvoiceTemplate } from './components/invoices/A4InvoiceTemplate';
 import { ThermalReceiptTemplate } from './components/invoices/ThermalReceiptTemplate';
@@ -62,6 +63,7 @@ export default function App() {
   const [viewingFormat, setViewingFormat] = useState<'a4' | 'thermal'>('a4');
   const [isCreatingInvoice, setIsCreatingInvoice] = useState<boolean>(false);
   const [newInvoiceDocType, setNewInvoiceDocType] = useState<DocumentType>('SALES_INVOICE');
+  const [draftEstimateForPOS, setDraftEstimateForPOS] = useState<Invoice | null>(null);
 
   // Quick Payment In Modal
   const [isGlobalPaymentInOpen, setIsGlobalPaymentInOpen] = useState<boolean>(false);
@@ -484,6 +486,28 @@ export default function App() {
               setViewingInvoice(inv);
               setViewingFormat(fmt);
             }}
+            initialDraftEstimate={draftEstimateForPOS}
+            onClearDraftEstimate={() => setDraftEstimateForPOS(null)}
+          />
+        )}
+
+        {activeTab === 'ESTIMATES' && (
+          <EstimatesRegister
+            invoices={invoices}
+            company={company}
+            onViewEstimate={(inv, fmt) => {
+              setViewingInvoice(inv);
+              setViewingFormat(fmt);
+            }}
+            onConvertToInvoice={(estimate) => {
+              setDraftEstimateForPOS(estimate);
+              setActiveTab('POS');
+            }}
+            onNewEstimate={() => {
+              setDraftEstimateForPOS(null);
+              setActiveTab('POS');
+            }}
+            onDeleteEstimate={handleDeleteInvoice}
           />
         )}
 

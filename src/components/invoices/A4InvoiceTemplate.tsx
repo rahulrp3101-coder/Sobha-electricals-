@@ -74,9 +74,15 @@ export const A4InvoiceTemplate: React.FC<A4InvoiceTemplateProps> = ({
         {/* Header */}
         <div className="flex justify-between items-start border-b border-slate-200 pb-6 mb-6">
           <div>
-            <div className="inline-block px-2.5 py-0.5 bg-blue-50 text-blue-800 text-[11px] font-bold tracking-wider uppercase rounded mb-2">
-              Tax Invoice
-            </div>
+            {invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION' ? (
+              <div className="inline-block px-3 py-1 bg-amber-100 text-amber-950 border border-amber-300 text-xs sm:text-sm font-black tracking-wider uppercase rounded mb-2">
+                ESTIMATE / QUOTATION (अनुमानित पर्ची / कच्चा बिल)
+              </div>
+            ) : (
+              <div className="inline-block px-2.5 py-0.5 bg-blue-50 text-blue-800 text-[11px] font-bold tracking-wider uppercase rounded mb-2">
+                Tax Invoice
+              </div>
+            )}
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">{company.name}</h1>
             <p className="text-xs text-slate-500 font-medium">{company.legalTradeName}</p>
             <p className="text-xs text-slate-600 mt-1 max-w-sm">{company.address}, {company.city} - {company.pincode}</p>
@@ -95,7 +101,9 @@ export const A4InvoiceTemplate: React.FC<A4InvoiceTemplateProps> = ({
           <div className="text-right">
             <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-1">
               <div>
-                <span className="text-slate-400">Invoice No:</span>{' '}
+                <span className="text-slate-400">
+                  {invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION' ? 'Estimate No:' : 'Invoice No:'}
+                </span>{' '}
                 <strong className="font-mono text-slate-900 text-sm">{invoice.invoiceNumber}</strong>
               </div>
               <div>
@@ -108,8 +116,14 @@ export const A4InvoiceTemplate: React.FC<A4InvoiceTemplateProps> = ({
               </div>
               <div>
                 <span className="text-slate-400">Status:</span>{' '}
-                <span className={`font-semibold ${invoice.status === 'PAID' ? 'text-emerald-600' : 'text-amber-600'}`}>
-                  {invoice.status}
+                <span className={`font-semibold ${
+                  invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION'
+                    ? 'text-amber-700'
+                    : invoice.status === 'PAID' ? 'text-emerald-600' : 'text-amber-600'
+                }`}>
+                  {invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION'
+                    ? 'ESTIMATE (कच्चा पर्चा)'
+                    : invoice.status}
                 </span>
               </div>
             </div>

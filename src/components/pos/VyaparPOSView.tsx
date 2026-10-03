@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  Item, Party, Invoice, InvoiceItem, CompanyProfile, PaymentMode, DocumentType 
+  Item, Party, Invoice, InvoiceItem, CompanyProfile, PaymentMode, DocumentType, PartyType 
 } from '../../types';
 import { 
   calculateItemGST, calculateInvoiceTotals, formatINR 
@@ -29,6 +29,8 @@ interface VyaparPOSViewProps {
   onSaveItem?: (item: Item) => Promise<void>;
   onOpenPaymentIn?: () => void;
   onViewInvoice?: (invoice: Invoice, format: 'thermal' | 'a4') => void;
+  initialDraftEstimate?: Invoice | null;
+  onClearDraftEstimate?: () => void;
 }
 
 export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
@@ -41,6 +43,8 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
   onSaveItem,
   onOpenPaymentIn,
   onViewInvoice,
+  initialDraftEstimate,
+  onClearDraftEstimate,
 }) => {
   // Default Customer (Walk-in Customer)
   const defaultWalkInParty: Party = useMemo(() => {
@@ -70,6 +74,36 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
   const [cartLines, setCartLines] = useState<InvoiceItem[]>([]);
   const [editingQtyItemId, setEditingQtyItemId] = useState<string | null>(null);
   const [editingQtyVal, setEditingQtyVal] = useState<string>('');
+
+  // Mode Switch Toggle: 'TAX_INVOICE' vs 'ESTIMATE' (Requirement 1 & 2)
+  const [billingMode, setBillingMode] = useState<'TAX_INVOICE' | 'ESTIMATE'>('TAX_INVOICE');
+  const [estimateDeductStock, setEstimateDeductStock] = useState<boolean>(false);
+  const [convertedFromEstimateId, setConvertedFromEstimateId] = useState<string | null>(null);
+
+  // Pre-load draft estimate when converted from Estimates Register (Requirement 4)
+  useEffect(() => {
+    if (initialDraftEstimate) {
+      const p = parties.find(party => party.id === initialDraftEstimate.partyId) || {
+        id: initialDraftEstimate.partyId || `pty-${Date.now()}`,
+        name: initialDraftEstimate.partyName,
+        phone: initialDraftEstimate.partyPhone || '',
+        address: initialDraftEstimate.partyAddress || '',
+        type: 'CUSTOMER' as PartyType,
+        creditLimit: 50000,
+        currentBalance: 0,
+        state: initialDraftEstimate.partyState || company.state,
+        stateCode: initialDraftEstimate.partyStateCode || company.stateCode,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      setSelectedParty(p);
+      setCartLines(initialDraftEstimate.items || []);
+      setBillingMode('TAX_INVOICE');
+      setConvertedFromEstimateId(initialDraftEstimate.id);
+      showFlashToast(`🔄 कोटेशन #${initialDraftEstimate.invoiceNumber} लोड हो गया! अब पक्का बिल बनाएं।`);
+      onClearDraftEstimate?.();
+    }
+  }, [initialDraftEstimate, parties, company, onClearDraftEstimate]);
 
   // Item Search & Input fields
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -378,6 +412,9 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
     setPaymentMode('CASH');
     setCreditPaidAmount(0);
     setInvoiceNotes('');
+    setBillingMode('TAX_INVOICE');
+    setEstimateDeductStock(false);
+    setConvertedFromEstimateId(null);
     searchInputRef.current?.focus();
     showFlashToast('नया बिल तैयार (Cart Reset)');
   };
@@ -393,7 +430,11 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
     setIsSaving(true);
     try {
       const now = new Date();
-      const invoiceNumber = `${company.invoicePrefix || 'INV-'}${now.getFullYear()}-${String(Date.now()).slice(-5)}`;
+      const isEstimateMode = billingMode === 'ESTIMATE';
+      const invoiceNumber = isEstimateMode
+        ? `EST-${now.getFullYear()}-${String(Date.now()).slice(-5)}`
+        : `${company.invoicePrefix || 'INV-'}${now.getFullYear()}-${String(Date.now()).slice(-5)}`;
+
       const isUdhar = paymentMode === 'CREDIT';
       const actualReceived = isUdhar
         ? Math.min(totals.grandTotal, Math.max(0, Number(creditPaidAmount) || 0))
@@ -403,15 +444,24 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         balanceDue === 0 ? 'PAID' : actualReceived > 0 ? 'PARTIAL' : 'UNPAID';
 
       let finalNotes = invoiceNotes.trim();
-      if (isUdhar && actualReceived > 0) {
+      if (isEstimateMode) {
+        const estNote = estimateDeductStock 
+          ? 'ESTIMATE (Stock Deducted / स्टॉक कम किया गया)' 
+          : 'ESTIMATE / QUOTATION (कच्चा पर्चा / स्टॉक सुरक्षित)';
+        finalNotes = finalNotes ? `${finalNotes} | ${estNote}` : estNote;
+      } else if (convertedFromEstimateId) {
+        const convNote = `Converted from Estimate #${convertedFromEstimateId}`;
+        finalNotes = finalNotes ? `${finalNotes} | ${convNote}` : convNote;
+      } else if (isUdhar && actualReceived > 0) {
         const partialNote = `Partial Paid: ${formatINR(actualReceived)} (${creditPaymentMethod}), Udhar: ${formatINR(balanceDue)}`;
         finalNotes = finalNotes ? `${finalNotes} | ${partialNote}` : partialNote;
       }
 
       const invoice: Invoice = {
-        id: `inv-${Date.now()}`,
+        id: isEstimateMode ? `est-${Date.now()}` : `inv-${Date.now()}`,
         invoiceNumber,
-        documentType: 'SALES_INVOICE' as DocumentType,
+        documentType: isEstimateMode ? ('ESTIMATE' as DocumentType) : ('SALES_INVOICE' as DocumentType),
+        deductStock: isEstimateMode ? estimateDeductStock : true,
         partyId: selectedParty.id,
         partyName: selectedParty.name,
         partyPhone: selectedParty.phone,
@@ -430,10 +480,10 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
         totalTax: totals.totalTax,
         roundOff: totals.roundOff,
         grandTotal: totals.grandTotal,
-        receivedAmount: actualReceived,
-        balanceAmount: balanceDue,
-        paymentMode: isUdhar && actualReceived > 0 ? 'SPLIT' : paymentMode,
-        status: invoiceStatus,
+        receivedAmount: isEstimateMode ? 0 : actualReceived,
+        balanceAmount: isEstimateMode ? totals.grandTotal : balanceDue,
+        paymentMode: isEstimateMode ? 'CASH' : (isUdhar && actualReceived > 0 ? 'SPLIT' : paymentMode),
+        status: isEstimateMode ? 'UNPAID' : invoiceStatus,
         notes: finalNotes || undefined,
         isSynced: true,
         createdAt: now.toISOString(),
@@ -441,6 +491,22 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       };
 
       const saved = await onSaveInvoice(invoice, false, printFormatPref);
+
+      // If converted from an estimate, mark original estimate as converted
+      if (convertedFromEstimateId) {
+        const originalEst = invoices.find(inv => inv.id === convertedFromEstimateId);
+        if (originalEst) {
+          const updatedEst: Invoice = {
+            ...originalEst,
+            isConvertedToInvoice: true,
+            convertedInvoiceId: saved.id,
+            updatedAt: new Date().toISOString(),
+          };
+          await onSaveInvoice(updatedEst, false);
+        }
+        setConvertedFromEstimateId(null);
+      }
+
       setFinalInvoice(saved);
       setShowFinalModal(true);
 
@@ -448,6 +514,11 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
       setCartLines([]);
       setCreditPaidAmount(0);
       setInvoiceNotes('');
+      showFlashToast(
+        isEstimateMode 
+          ? `📝 एस्टिमेट #${saved.invoiceNumber} सुरक्षित सेव हो गया` 
+          : `⚡ टैक्स इनवॉइस #${saved.invoiceNumber} सफलतापूर्वक सेव हो गया`
+      );
     } catch (err) {
       console.error('Error saving invoice:', err);
       showFlashToast('बिल सेव करने में त्रुटि हुई', true);
@@ -508,6 +579,23 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
             )}
             <span>{feedbackToast.msg}</span>
           </div>
+        </div>
+      )}
+
+      {/* Estimate Mode Notification Banner (Requirement 1 & 3) */}
+      {billingMode === 'ESTIMATE' && (
+        <div className="bg-amber-500 text-white px-3 py-1.5 text-xs font-bold flex items-center justify-between shadow-xs animate-in slide-in-from-top-1 duration-150 z-30">
+          <div className="flex items-center gap-2">
+            <span className="text-sm">📝</span>
+            <span>कोटेशन / कच्चा बिल मोड सक्रिय है (ESTIMATE MODE ACTIVE) — यह राशि मुख्य GST टर्नओवर व सेल्स टैक्स रिपोर्ट में शामिल नहीं होगी।</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setBillingMode('TAX_INVOICE')}
+            className="text-[11px] bg-white/20 hover:bg-white/30 text-white px-2.5 py-0.5 rounded-lg font-bold cursor-pointer transition active:scale-95"
+          >
+            वापस Tax Invoice पर जाएँ ↵
+          </button>
         </div>
       )}
 
@@ -581,6 +669,36 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
                     : `${formatINR(Math.abs(selectedParty.currentBalance))} जमा`}
                 </span>
               )}
+            </div>
+
+            {/* Mode Switch Toggle: Tax Invoice vs Estimate / Quotation (Requirement 1) */}
+            <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-300 shrink-0">
+              <button
+                type="button"
+                onClick={() => setBillingMode('TAX_INVOICE')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                  billingMode === 'TAX_INVOICE'
+                    ? 'bg-blue-600 text-white shadow-xs font-black'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+                title="पक्का टैक्स इनवॉइस मोड (Official GST Tax Invoice)"
+              >
+                <span>🧾 Tax Invoice</span>
+                <span className="hidden xl:inline text-[11px] font-normal">(पक्का बिल)</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBillingMode('ESTIMATE')}
+                className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                  billingMode === 'ESTIMATE'
+                    ? 'bg-amber-500 text-white shadow-xs font-black'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                }`}
+                title="कच्चा बिल / कोटेशन मोड (Estimate / Quotation Slip)"
+              >
+                <span>📝 Estimate</span>
+                <span className="hidden xl:inline text-[11px] font-normal">(कच्चा पर्चा)</span>
+              </button>
             </div>
 
             {/* Change customer list modal fallback button */}
@@ -1137,17 +1255,48 @@ export const VyaparPOSView: React.FC<VyaparPOSViewProps> = ({
               </button>
             </div>
 
+            {/* Deduct Stock Toggle in Estimate Mode (Requirement 2) */}
+            {billingMode === 'ESTIMATE' && (
+              <label 
+                className="flex items-center gap-2 bg-amber-50 border border-amber-300 px-3 py-2 rounded-xl text-xs font-bold text-amber-950 cursor-pointer hover:bg-amber-100 transition shadow-2xs select-none"
+                title="यदि टिक करेंगे तो एस्टिमेट सेव होने पर सामान इन्वेंटरी स्टॉक में से घटेगा"
+              >
+                <input
+                  type="checkbox"
+                  checked={estimateDeductStock}
+                  onChange={(e) => setEstimateDeductStock(e.target.checked)}
+                  className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 accent-amber-600 cursor-pointer"
+                />
+                <span className="flex items-center gap-1">
+                  <span>🔘 स्टॉक में से घटाएं?</span>
+                  <span className="text-[10px] text-amber-800 font-medium hidden sm:inline">(Deduct stock)</span>
+                </span>
+              </label>
+            )}
+
             {/* BIG SAVE & PRINT BILL BUTTON */}
             <button
               type="button"
               disabled={isSaving || cartLines.length === 0}
               onClick={handleFinalizeBill}
-              className="py-2.5 px-5 sm:px-6 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-xl text-xs sm:text-sm font-black transition shadow-lg flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer"
-              title="Save & Print Bill (Ctrl+Enter / F8)"
+              className={`py-2.5 px-5 sm:px-6 disabled:opacity-50 text-white rounded-xl text-xs sm:text-sm font-black transition shadow-lg flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer ${
+                billingMode === 'ESTIMATE'
+                  ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-200'
+                  : 'bg-emerald-600 hover:bg-emerald-700'
+              }`}
+              title={billingMode === 'ESTIMATE' ? 'Save & Print Estimate (Ctrl+Enter / F8)' : 'Save & Print Bill (Ctrl+Enter / F8)'}
             >
               <Printer className="w-4 h-4 stroke-[2.5]" />
-              <span>{isSaving ? 'सेव हो रहा है...' : '💾 Save & Print Bill (प्रिंट करें)'}</span>
-              <span className="hidden sm:inline text-[10px] bg-emerald-700 text-emerald-100 px-1.5 py-0.5 rounded font-mono">
+              <span>
+                {isSaving 
+                  ? 'सेव हो रहा है...' 
+                  : billingMode === 'ESTIMATE' 
+                    ? '📝 Save & Print Estimate (कच्चा पर्चा)' 
+                    : '💾 Save & Print Bill (प्रिंट करें)'}
+              </span>
+              <span className={`hidden sm:inline text-[10px] px-1.5 py-0.5 rounded font-mono ${
+                billingMode === 'ESTIMATE' ? 'bg-amber-700 text-amber-100' : 'bg-emerald-700 text-emerald-100'
+              }`}>
                 Ctrl+↵ / F8
               </span>
             </button>

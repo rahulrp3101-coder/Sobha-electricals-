@@ -189,6 +189,11 @@ export const ThermalReceiptTemplate: React.FC<ThermalReceiptTemplateProps> = ({
       >
         {/* Header */}
         <div className="text-center pb-2">
+          {invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION' ? (
+            <div className="text-xs font-black bg-amber-100 text-amber-900 border border-amber-300 py-1 px-2 rounded mb-1.5 uppercase tracking-wide">
+              *** ESTIMATE / QUOTATION (अनुमानित पर्ची) ***
+            </div>
+          ) : null}
           <div className="font-bold text-sm uppercase tracking-tight">{company.name}</div>
           <div className="text-[11px]">{company.address}</div>
           <div className="text-[11px]">{company.city} - {company.pincode}</div>
@@ -201,8 +206,11 @@ export const ThermalReceiptTemplate: React.FC<ThermalReceiptTemplateProps> = ({
         {/* Invoice Metadata */}
         <div className="text-[11px] space-y-0.5">
           <div className="flex justify-between">
-            <span>Bill No: {invoice.invoiceNumber}</span>
-            <span>{invoice.paymentMode}</span>
+            <span>
+              {invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION' ? 'Est No:' : 'Bill No:'}{' '}
+              <strong>{invoice.invoiceNumber}</strong>
+            </span>
+            <span>{invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION' ? 'ESTIMATE' : invoice.paymentMode}</span>
           </div>
           <div className="flex justify-between">
             <span>Date: {invoice.date}</span>

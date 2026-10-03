@@ -386,7 +386,11 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                         {onDeleteItem && (
                           <button
                             type="button"
-                            onClick={() => setItemToDelete(item)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              e.preventDefault();
+                              setItemToDelete(item);
+                            }}
                             className="flex items-center gap-1 px-2.5 py-1.5 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-lg text-xs font-bold transition active:scale-95 cursor-pointer shadow-2xs"
                             title="Delete Item (आइटम हटाएं)"
                           >
@@ -433,8 +437,12 @@ export const InventoryMaster: React.FC<InventoryMasterProps> = ({
                     {onDeleteItem && (
                       <button
                         type="button"
-                        onClick={() => setItemToDelete(item)}
-                        className="p-1.5 text-red-600 hover:bg-red-100 bg-red-50 rounded-lg border border-red-200"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          setItemToDelete(item);
+                        }}
+                        className="p-1.5 text-red-600 hover:bg-red-100 bg-red-50 rounded-lg border border-red-200 cursor-pointer"
                         title="Delete Item (आइटम हटाएं)"
                       >
                         <Trash2 className="w-4 h-4 text-red-600" />

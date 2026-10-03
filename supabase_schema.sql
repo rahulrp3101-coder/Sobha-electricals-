@@ -158,3 +158,15 @@ ALTER PUBLICATION supabase_realtime ADD TABLE invoices;
 ALTER PUBLICATION supabase_realtime ADD TABLE purchases;
 ALTER PUBLICATION supabase_realtime ADD TABLE expenses;
 ALTER PUBLICATION supabase_realtime ADD TABLE payments;
+
+-- ----------------------------------------------------------------------------
+-- OPTIONAL: Add extra columns for Universal Customer Search & Estimates
+-- (NOTE: The app works 100% fine even without running this, because all extra
+-- fields are automatically stored in the 'data_json' JSONB column!)
+-- ----------------------------------------------------------------------------
+ALTER TABLE parties ADD COLUMN IF NOT EXISTS shop_name TEXT;
+ALTER TABLE parties ADD COLUMN IF NOT EXISTS city TEXT;
+ALTER TABLE parties ADD COLUMN IF NOT EXISTS village TEXT;
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS document_type TEXT DEFAULT 'SALES_INVOICE';
+ALTER TABLE invoices ADD COLUMN IF NOT EXISTS deduct_stock BOOLEAN DEFAULT FALSE;
+

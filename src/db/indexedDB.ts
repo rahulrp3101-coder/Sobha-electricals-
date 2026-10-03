@@ -228,13 +228,15 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
     const isPurchase = invoice.documentType === 'PURCHASE_BILL';
     const isCreditNote = invoice.documentType === 'CREDIT_NOTE'; // Return sales -> stock increment
     const isDebitNote = invoice.documentType === 'DEBIT_NOTE'; // Return purchase -> stock decrement
+    const isEstimate = invoice.documentType === 'QUOTATION' || invoice.documentType === 'ESTIMATE';
+    const shouldDeductStock = isSales || isDebitNote || (isEstimate && Boolean(invoice.deductStock));
 
     for (const line of invoice.items) {
       const itemReq = itemStore.get(line.itemId);
       itemReq.onsuccess = () => {
         const item = itemReq.result as Item;
         if (item) {
-          if (isSales || isDebitNote) {
+          if (shouldDeductStock) {
             item.currentStock = Math.max(0, item.currentStock - line.quantity);
           } else if (isPurchase || isCreditNote) {
             item.currentStock += line.quantity;
@@ -509,6 +511,8 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
       const isPurchase = invoice.documentType === 'PURCHASE_BILL';
       const isCreditNote = invoice.documentType === 'CREDIT_NOTE';
       const isDebitNote = invoice.documentType === 'DEBIT_NOTE';
+      const isEstimate = invoice.documentType === 'QUOTATION' || invoice.documentType === 'ESTIMATE';
+      const wasStockDeducted = isSales || isDebitNote || (isEstimate && Boolean(invoice.deductStock));
 
       // 1. Rollback Stock
       if (invoice.items && Array.isArray(invoice.items)) {
@@ -517,8 +521,8 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
           itemReq.onsuccess = () => {
             const item = itemReq.result as Item;
             if (item) {
-              if (isSales || isDebitNote) {
-                // Stock was decremented on sale, so increment it back
+              if (wasStockDeducted) {
+                // Stock was decremented, so increment it back
                 item.currentStock += line.quantity;
               } else if (isPurchase || isCreditNote) {
                 // Stock was incremented on purchase, so decrement it back

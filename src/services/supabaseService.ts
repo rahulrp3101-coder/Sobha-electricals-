@@ -284,7 +284,7 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
     const pendingParties = parties.filter(p => (p as any).is_synced === false || (p as any).isSynced === false);
     const pendingInvoices = invoices.filter(inv => 
       ((inv as any).is_synced === false || (inv as any).isSynced === false) && 
-      (inv.documentType === 'SALES_INVOICE' || !inv.documentType)
+      (inv.documentType === 'SALES_INVOICE' || !inv.documentType || inv.documentType === 'ESTIMATE' || inv.documentType === 'QUOTATION')
     );
     const pendingPurchases = invoices.filter(p => 
       ((p as any).is_synced === false || (p as any).isSynced === false) && 

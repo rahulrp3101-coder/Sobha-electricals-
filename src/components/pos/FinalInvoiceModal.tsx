@@ -27,24 +27,30 @@ export const FinalInvoiceModal: React.FC<FinalInvoiceModalProps> = ({
 }) => {
   if (!isOpen || !invoice) return null;
 
-  const isUdhar = invoice.paymentMode === 'CREDIT' || invoice.balanceAmount > 0;
+  const isEstimate = invoice.documentType === 'ESTIMATE' || invoice.documentType === 'QUOTATION';
+  const isUdhar = !isEstimate && (invoice.paymentMode === 'CREDIT' || invoice.balanceAmount > 0);
   const newOutstanding = customerPreviousBalance + invoice.balanceAmount;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 backdrop-blur-2xs p-3 sm:p-4 overflow-y-auto">
       <div className="w-full max-w-xl bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col max-h-[92vh] animate-in fade-in zoom-in-95 duration-200 my-auto">
         {/* Top Success Banner */}
-        <div className="bg-linear-to-r from-emerald-600 via-teal-600 to-emerald-700 p-4 sm:p-5 text-white flex items-center justify-between">
+        <div className={`p-4 sm:p-5 text-white flex items-center justify-between ${
+          isEstimate 
+            ? 'bg-linear-to-r from-amber-600 via-orange-600 to-amber-700' 
+            : 'bg-linear-to-r from-emerald-600 via-teal-600 to-emerald-700'
+        }`}>
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-2xl bg-white/20 flex items-center justify-center font-bold">
               <Check className="w-6 h-6 stroke-[3]" />
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-black leading-tight">
-                बिल सफलतापूर्वक पूरा हो गया!
+                {isEstimate ? 'एस्टिमेट / कोटेशन तैयार हो गया!' : 'बिल सफलतापूर्वक पूरा हो गया!'}
               </h3>
-              <p className="text-xs text-emerald-100 font-mono">
-                बिल नं: <strong>{invoice.invoiceNumber}</strong> · तारीख: {invoice.date}
+              <p className="text-xs text-white/90 font-mono">
+                {isEstimate ? 'एस्टिमेट नं: ' : 'बिल नं: '}
+                <strong>{invoice.invoiceNumber}</strong> · तारीख: {invoice.date}
               </p>
             </div>
           </div>
@@ -76,12 +82,12 @@ export const FinalInvoiceModal: React.FC<FinalInvoiceModalProps> = ({
               {invoice.partyAddress && <div className="text-slate-500 truncate">{invoice.partyAddress}</div>}
               <div className="mt-1 flex items-center gap-1.5">
                 <span className="text-[10px] font-bold bg-blue-100 text-blue-900 px-1.5 py-0.5 rounded">
-                  {invoice.paymentMode === 'CREDIT' ? 'उधार बिल' : invoice.paymentMode}
+                  {isEstimate ? 'ESTIMATE / QUOTATION' : invoice.paymentMode === 'CREDIT' ? 'उधार बिल' : invoice.paymentMode}
                 </span>
                 <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                  invoice.status === 'PAID' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'
+                  isEstimate ? 'bg-amber-100 text-amber-900 border border-amber-300 font-extrabold' : invoice.status === 'PAID' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-900'
                 }`}>
-                  {invoice.status === 'PAID' ? 'चुकता (PAID)' : 'बकाया (UNPAID)'}
+                  {isEstimate ? (invoice.deductStock ? '📦 स्टॉक घटाया गया' : '🛡️ स्टॉक सुरक्षित') : invoice.status === 'PAID' ? 'चुकता (PAID)' : 'बकाया (UNPAID)'}
                 </span>
               </div>
             </div>

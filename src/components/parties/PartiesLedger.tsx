@@ -9,7 +9,7 @@ import {
   ArrowDownLeft, ArrowUpRight, DollarSign, X, Check, CreditCard, AlertCircle,
   ArrowLeft, Eye, ChevronDown, ChevronUp, Printer, FileText, ShoppingBag,
   Calendar, CheckCircle2, Building2, MapPin, QrCode, Smartphone, ExternalLink,
-  Trash2, AlertTriangle, Ban
+  Trash2, AlertTriangle, Ban, Edit
 } from 'lucide-react';
 import { 
   generateWhatsAppKhataReminderURL, 
@@ -118,6 +118,82 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
   const [address, setAddress] = useState('');
   const [creditLimit, setCreditLimit] = useState(25000);
   const [openingBalance, setOpeningBalance] = useState(0);
+
+  // Party Edit State (Requirement 1)
+  const [partyToEdit, setPartyToEdit] = useState<Party | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editType, setEditType] = useState<'CUSTOMER' | 'SUPPLIER'>('CUSTOMER');
+  const [editPhone, setEditPhone] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editGstin, setEditGstin] = useState('');
+  const [editStateCode, setEditStateCode] = useState(company.stateCode || '27');
+  const [editAddress, setEditAddress] = useState('');
+  const [editShopName, setEditShopName] = useState('');
+  const [editCity, setEditCity] = useState('');
+  const [editVillage, setEditVillage] = useState('');
+  const [editOpeningBalance, setEditOpeningBalance] = useState<number>(0);
+  const [isSavingEditParty, setIsSavingEditParty] = useState(false);
+
+  const handleOpenEditParty = (party: Party, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setPartyToEdit(party);
+    setEditName(party.name || '');
+    setEditType(party.type || 'CUSTOMER');
+    setEditPhone(party.phone || '');
+    setEditEmail(party.email || '');
+    setEditGstin(party.gstin || '');
+    setEditStateCode(party.stateCode || company.stateCode || '27');
+    setEditAddress(party.address || '');
+    setEditShopName(party.shopName || '');
+    setEditCity(party.city || '');
+    setEditVillage(party.village || '');
+    setEditOpeningBalance(party.openingBalance || 0);
+  };
+
+  const handleSaveEditParty = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!partyToEdit || !editName.trim()) return;
+
+    setIsSavingEditParty(true);
+    try {
+      const oldOpening = partyToEdit.openingBalance || 0;
+      const newOpening = Number(editOpeningBalance) || 0;
+      const diff = newOpening - oldOpening;
+
+      const updatedParty: Party = {
+        ...partyToEdit,
+        name: editName.trim(),
+        type: editType,
+        phone: editPhone.trim(),
+        email: editEmail.trim() || undefined,
+        gstin: editGstin ? editGstin.trim().toUpperCase() : undefined,
+        state: INDIAN_STATES[editStateCode] || partyToEdit.state,
+        stateCode: editStateCode,
+        address: editAddress.trim(),
+        shopName: editShopName.trim() || undefined,
+        city: editCity.trim() || undefined,
+        village: editVillage.trim() || undefined,
+        openingBalance: newOpening,
+        currentBalance: (partyToEdit.currentBalance || 0) + diff,
+        updatedAt: new Date().toISOString(),
+      };
+
+      await onSaveParty(updatedParty);
+      if (selectedParty?.id === updatedParty.id) {
+        setSelectedParty(updatedParty);
+      }
+      showToast(`पार्टी '${updatedParty.name}' का विवरण सफलतापूर्वक अपडेट हुआ!`);
+      setPartyToEdit(null);
+    } catch (err) {
+      console.error('Failed to update party:', err);
+      showToast('पार्टी अपडेट करने में त्रुटि हुई');
+    } finally {
+      setIsSavingEditParty(false);
+    }
+  };
 
   // Toast feedback
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -541,6 +617,286 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
     });
   }, [activeParty, company, summaryStats, ledgerEntries]);
 
+  // Helper: Delete Party Confirmation Modal
+  const renderDeletePartyModal = () => {
+    if (!partyToDelete) return null;
+    const hasDuesOrBills = partyToDelete.currentBalance !== 0 || (invoices && invoices.some(inv => inv.partyId === partyToDelete.id));
+    const linkedBillsCount = invoices ? invoices.filter(inv => inv.partyId === partyToDelete.id).length : 0;
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+        <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-slate-900">
+          <div className="bg-red-600 text-white p-4 flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold">
+                <AlertTriangle className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm sm:text-base">🗑️ Delete Party (पार्टी हटाएं)</h3>
+                <p className="text-[11px] text-red-100">IndexedDB और Supabase दोनों से स्थायी रूप से हटेगा</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPartyToDelete(null)}
+              className="p-1 rounded-lg text-red-200 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <div className="p-5 space-y-4 text-xs">
+            {hasDuesOrBills ? (
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl space-y-2 text-amber-950">
+                <div className="font-extrabold text-sm text-red-950 leading-snug flex items-center gap-1.5">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>चेतावनी: इस पार्टी का पुराना हिसाब/बकाया मौजूद है। क्या आप वाकई इसे डिलीट करना चाहते हैं?</span>
+                </div>
+                <p className="text-xs text-amber-900 leading-relaxed">
+                  इस पार्टी का वर्तमान बकाया <strong>{formatINR(partyToDelete.currentBalance)}</strong> है और इसके कुल <strong>{linkedBillsCount} पुराने बिल</strong> हैं। स्थायी डिलीट करने से यह पार्टी दोनों जगह से हमेशा के लिए हट जाएगी।
+                </p>
+              </div>
+            ) : (
+              <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl space-y-2 text-red-900">
+                <div className="font-extrabold text-sm text-red-950 leading-snug">
+                  क्या आप वाकई पार्टी '{partyToDelete.name}' को हमेशा के लिए हटाना चाहते हैं?
+                </div>
+                <p className="text-xs text-red-800 leading-relaxed">
+                  यह पार्टी IndexedDB और Supabase क्लाउड डेटाबेस दोनों से हमेशा के लिए मिट जाएगी।
+                </p>
+              </div>
+            )}
+
+            <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 font-medium text-slate-700">
+              <div className="flex justify-between">
+                <span>पार्टी का नाम:</span>
+                <span className="font-bold text-slate-900">{partyToDelete.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>प्रकार (Type):</span>
+                <span className="font-bold text-slate-900">{partyToDelete.type === 'CUSTOMER' ? 'Customer (ग्राहक)' : 'Supplier (सप्लायर)'}</span>
+              </div>
+              <div className="flex justify-between">
+                <span>वर्तमान बकाया (Balance):</span>
+                <span className={`font-mono font-bold ${partyToDelete.currentBalance > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
+                  {formatINR(partyToDelete.currentBalance)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => setPartyToDelete(null)}
+                disabled={isDeletingParty}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
+              >
+                रद्द करें (Cancel)
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDeleteParty}
+                disabled={isDeletingParty}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer"
+              >
+                <Trash2 className="w-4 h-4" />
+                <span>{isDeletingParty ? 'हटाया जा रहा है...' : 'हाँ, पार्टी डिलीट करें'}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // Helper: Edit Party Modal (Requirement 1)
+  const renderEditPartyModal = () => {
+    if (!partyToEdit) return null;
+    const isSupplier = partyToEdit.type === 'SUPPLIER';
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 overflow-y-auto animate-in fade-in">
+        <div className="relative w-full max-w-lg bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden my-auto animate-in zoom-in-95 duration-200 text-slate-900">
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-blue-600 text-white">
+            <div className="flex items-center gap-2">
+              <Edit className="w-5 h-5 text-white" />
+              <div>
+                <h3 className="font-bold text-sm sm:text-base">
+                  ✏️ Edit {isSupplier ? 'Supplier' : 'Customer'} ({isSupplier ? 'सप्लायर' : 'ग्राहक'} विवरण बदलें)
+                </h3>
+                <p className="text-[11px] text-blue-100">IndexedDB और Supabase क्लाउड दोनों में तुरंत अपडेट होगा</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setPartyToEdit(null)}
+              className="p-1 rounded-lg text-blue-200 hover:text-white"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          <form onSubmit={handleSaveEditParty} className="p-4 sm:p-5 space-y-3 text-xs">
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                Party / Firm Name (पार्टी / दुकान का नाम) *
+              </label>
+              <input
+                type="text"
+                required
+                value={editName}
+                onChange={e => setEditName(e.target.value)}
+                placeholder="e.g. Sharma Traders / Rajesh Kumar"
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm font-semibold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Type (खाता प्रकार)
+                </label>
+                <select
+                  value={editType}
+                  onChange={e => setEditType(e.target.value as any)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                >
+                  <option value="CUSTOMER">Customer (ग्राहक)</option>
+                  <option value="SUPPLIER">Supplier / Vendor (सप्लायर)</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Mobile Number (फ़ोन / WhatsApp)
+                </label>
+                <input
+                  type="tel"
+                  value={editPhone}
+                  onChange={e => setEditPhone(e.target.value)}
+                  placeholder="98XXXXXXXX"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-semibold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Shop / Firm Name (दुकान का नाम)
+                </label>
+                <input
+                  type="text"
+                  value={editShopName}
+                  onChange={e => setEditShopName(e.target.value)}
+                  placeholder="दुकान या व्यापार का नाम"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  GSTIN Number (GSTIN)
+                </label>
+                <input
+                  type="text"
+                  value={editGstin}
+                  onChange={e => setEditGstin(e.target.value)}
+                  placeholder="23AAAAA0000A1Z5"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono uppercase text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  City / Village (शहर / गाँव)
+                </label>
+                <input
+                  type="text"
+                  value={editCity}
+                  onChange={e => setEditCity(e.target.value)}
+                  placeholder="उदा. Bareli / Bhopal"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                />
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  State (राज्य)
+                </label>
+                <select
+                  value={editStateCode}
+                  onChange={e => setEditStateCode(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                >
+                  {Object.entries(INDIAN_STATES).map(([code, sName]) => (
+                    <option key={code} value={code}>
+                      {code} - {sName}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                Address (पूरा पता)
+              </label>
+              <textarea
+                rows={2}
+                value={editAddress}
+                onChange={e => setEditAddress(e.target.value)}
+                placeholder="दुकान या घर का पूरा पता..."
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600 resize-none"
+              />
+            </div>
+
+            <div>
+              <label className="block font-semibold text-slate-700 mb-1">
+                Opening Khata Balance (शुरुआती पुराना बकाया ₹)
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-2 font-bold text-slate-400">₹</span>
+                <input
+                  type="number"
+                  step="any"
+                  value={editOpeningBalance}
+                  onChange={e => setEditOpeningBalance(Number(e.target.value))}
+                  placeholder="0.00"
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-7 pr-3 py-2 text-xs font-mono font-bold text-slate-900 focus:bg-white focus:outline-none focus:border-blue-600"
+                />
+              </div>
+              <p className="text-[10px] text-slate-400 mt-1">
+                * यदि आप शुरुआती पुराना बकाया बदलेंगे, तो वर्तमान बैलेंस में अंतर अपने आप समायोजित हो जाएगा।
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setPartyToEdit(null)}
+                disabled={isSavingEditParty}
+                className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
+              >
+                रद्द करें (Cancel)
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingEditParty}
+                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer"
+              >
+                <Check className="w-4 h-4 stroke-[2.5]" />
+                <span>{isSavingEditParty ? 'सेव हो रहा है...' : 'सुरक्षित करें (Save Changes)'}</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
+  };
+
   // --------------------------------------------------------------------------
   // VIEW 1: SINGLE CUSTOMER / SUPPLIER DETAILED STATEMENT & LEDGER (Requirement 2, 3, 4)
   // --------------------------------------------------------------------------
@@ -670,11 +1026,26 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
               <span>{activeParty.isBlacklisted ? 'सक्रिय करें' : '🚫 Blacklist'}</span>
             </button>
 
-            {/* Delete Party Button (Requirement 3a) */}
+            {/* Edit Party Details Button (Requirement 1) */}
+            <button
+              type="button"
+              onClick={(e) => handleOpenEditParty(activeParty, e)}
+              className="p-2 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
+              title="Edit Party Details (पार्टी/सप्लायर का विवरण बदलें)"
+            >
+              <Edit className="w-4 h-4 text-blue-600" />
+              <span className="hidden sm:inline">✏️ Edit</span>
+            </button>
+
+            {/* Delete Party Button (Requirement 3a & 2) */}
             {onDeleteParty && (
               <button
                 type="button"
-                onClick={() => setPartyToDelete(activeParty)}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  e.preventDefault();
+                  setPartyToDelete(activeParty);
+                }}
                 className="p-2 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
                 title="Delete Party (स्थायी रूप से हटाएं)"
               >
@@ -1298,6 +1669,10 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
             </div>
           </div>
         )}
+
+        {/* Modals rendered inside activeParty view as well */}
+        {renderDeletePartyModal()}
+        {renderEditPartyModal()}
       </div>
     );
   }
@@ -1615,12 +1990,24 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                           <span>{party.isBlacklisted ? '🚫 Inactive' : 'Blacklist'}</span>
                         </button>
 
-                        {/* Delete Party Button (Requirement 3a) */}
+                        {/* Edit Party Button (Requirement 1) */}
+                        <button
+                          type="button"
+                          onClick={(e) => handleOpenEditParty(party, e)}
+                          className="px-2 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
+                          title="Edit Party (पार्टी/सप्लायर विवरण बदलें)"
+                        >
+                          <Edit className="w-3.5 h-3.5 text-blue-600" />
+                          <span>✏️ Edit</span>
+                        </button>
+
+                        {/* Delete Party Button (Requirement 3a & 2) */}
                         {onDeleteParty && (
                           <button
                             type="button"
                             onClick={(e) => {
                               e.stopPropagation();
+                              e.preventDefault();
                               setPartyToDelete(party);
                             }}
                             className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition border border-transparent hover:border-red-200 cursor-pointer"
@@ -1739,15 +2126,27 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
                     <Ban className="w-3.5 h-3.5" />
                   </button>
 
+                  {/* Edit button on mobile (Requirement 1) */}
+                  <button
+                    type="button"
+                    onClick={(e) => handleOpenEditParty(party, e)}
+                    className="p-2 bg-blue-50 text-blue-700 border border-blue-200 rounded-xl text-xs font-bold transition flex items-center gap-1 active:scale-95 cursor-pointer"
+                    title="Edit Party (विवरण बदलें)"
+                  >
+                    <Edit className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Edit</span>
+                  </button>
+
                   {/* Delete button on mobile */}
                   {onDeleteParty && (
                     <button
                       type="button"
                       onClick={(e) => {
                         e.stopPropagation();
+                        e.preventDefault();
                         setPartyToDelete(party);
                       }}
-                      className="p-2 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold transition"
+                      className="p-2 bg-red-50 text-red-600 border border-red-200 rounded-xl text-xs font-bold transition active:scale-95 cursor-pointer"
                       title="Delete Party"
                     >
                       <Trash2 className="w-3.5 h-3.5" />
@@ -1772,96 +2171,9 @@ export const PartiesLedger: React.FC<PartiesLedgerProps> = ({
         </div>
       </div>
 
-      {/* Delete Party Confirmation Modal (Requirement 3a & 4) */}
-      {partyToDelete && (() => {
-        const hasDuesOrBills = partyToDelete.currentBalance !== 0 || invoices.some(inv => inv.partyId === partyToDelete.id);
-        const linkedBillsCount = invoices.filter(inv => inv.partyId === partyToDelete.id).length;
-
-        return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
-            <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl border border-slate-200 overflow-hidden text-slate-900">
-              <div className="bg-red-600 text-white p-4 flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <div className="w-8 h-8 rounded-xl bg-white/20 flex items-center justify-center font-bold">
-                    <AlertTriangle className="w-5 h-5 text-white" />
-                  </div>
-                  <div>
-                    <h3 className="font-extrabold text-sm sm:text-base">🗑️ Delete Party (पार्टी हटाएं)</h3>
-                    <p className="text-[11px] text-red-100">IndexedDB और Supabase दोनों से स्थायी रूप से हटेगा</p>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setPartyToDelete(null)}
-                  className="p-1 rounded-lg text-red-200 hover:text-white"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="p-5 space-y-4 text-xs">
-                {hasDuesOrBills ? (
-                  <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-2xl space-y-2 text-amber-950">
-                    <div className="font-extrabold text-sm text-red-950 leading-snug flex items-center gap-1.5">
-                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-                      <span>चेतावनी: इस पार्टी का पुराना हिसाब/बकाया मौजूद है। क्या आप वाकई इसे डिलीट करना चाहते हैं?</span>
-                    </div>
-                    <p className="text-xs text-amber-900 leading-relaxed">
-                      इस पार्टी का वर्तमान बकाया <strong>{formatINR(partyToDelete.currentBalance)}</strong> है और इसके कुल <strong>{linkedBillsCount} पुराने बिल</strong> हैं। स्थायी डिलीट करने से यह पार्टी दोनों जगह से हमेशा के लिए हट जाएगी।
-                    </p>
-                  </div>
-                ) : (
-                  <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl space-y-2 text-red-900">
-                    <div className="font-extrabold text-sm text-red-950 leading-snug">
-                      क्या आप वाकई पार्टी '{partyToDelete.name}' को हमेशा के लिए हटाना चाहते हैं?
-                    </div>
-                    <p className="text-xs text-red-800 leading-relaxed">
-                      यह पार्टी IndexedDB और Supabase क्लाउड डेटाबेस दोनों से हमेशा के लिए मिट जाएगी।
-                    </p>
-                  </div>
-                )}
-
-                <div className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-1.5 font-medium text-slate-700">
-                  <div className="flex justify-between">
-                    <span>पार्टी का नाम:</span>
-                    <span className="font-bold text-slate-900">{partyToDelete.name}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>प्रकार (Type):</span>
-                    <span className="font-bold text-slate-900">{partyToDelete.type === 'CUSTOMER' ? 'Customer (ग्राहक)' : 'Supplier (सप्लायर)'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span>वर्तमान बकाया (Balance):</span>
-                    <span className={`font-mono font-bold ${partyToDelete.currentBalance > 0 ? 'text-amber-700' : 'text-slate-700'}`}>
-                      {formatINR(partyToDelete.currentBalance)}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2 pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setPartyToDelete(null)}
-                    disabled={isDeletingParty}
-                    className="flex-1 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-xl transition cursor-pointer"
-                  >
-                    रद्द करें (Cancel)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleConfirmDeleteParty}
-                    disabled={isDeletingParty}
-                    className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl transition shadow-xs flex items-center justify-center gap-1.5 active:scale-95 cursor-pointer"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    <span>{isDeletingParty ? 'हटाया जा रहा है...' : 'हाँ, पार्टी डिलीट करें'}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        );
-      })()}
+      {/* Modals rendered in Master Parties List View */}
+      {renderDeletePartyModal()}
+      {renderEditPartyModal()}
 
       {/* Payment In Modal Component */}
       <PaymentInModal

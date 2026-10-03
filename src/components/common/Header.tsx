@@ -8,7 +8,7 @@ import {
 import { usePWAInstall } from '../../hooks/usePWAInstall';
 import { CompanyProfile } from '../../types';
 
-export type MainTab = 'POS' | 'PURCHASES' | 'INVENTORY' | 'PARTIES' | 'EXPENSES' | 'SETTINGS' | 'INVOICES' | 'REPORTS' | 'ARCHITECTURE';
+export type MainTab = 'POS' | 'PURCHASES' | 'INVENTORY' | 'PARTIES' | 'ESTIMATES' | 'EXPENSES' | 'SETTINGS' | 'INVOICES' | 'REPORTS' | 'ARCHITECTURE';
 
 interface HeaderProps {
   activeTab: MainTab;
@@ -105,7 +105,20 @@ export const Header: React.FC<HeaderProps> = ({
           );
         })}
 
-        {/* Secondary: Invoices, Expenses, Reports & Settings */}
+        {/* Secondary: Estimates, Invoices, Expenses, Reports & Settings */}
+        <button
+          onClick={() => onSelectTab('ESTIMATES')}
+          className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
+            activeTab === 'ESTIMATES'
+              ? 'bg-amber-600 text-white shadow-2xs font-bold'
+              : 'text-amber-700 bg-amber-50 hover:bg-amber-100 font-semibold'
+          }`}
+          title="Estimates & Quotations Register (कच्चा पर्चा / कोटेशन रजिस्टर)"
+        >
+          <FileText className="w-3.5 h-3.5 text-amber-600" />
+          <span>Estimates (कोटेशन)</span>
+        </button>
+
         <button
           onClick={() => onSelectTab('INVOICES')}
           className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg transition text-xs ${
@@ -400,6 +413,19 @@ export const Header: React.FC<HeaderProps> = ({
               <div>
                 <div>GST Reports</div>
                 <div className="text-[10px] text-slate-400 font-normal">GSTR-1, GSTR-2, P&L</div>
+              </div>
+            </button>
+
+            <button
+              onClick={() => { onSelectTab('ESTIMATES'); setShowMobileNav(false); }}
+              className={`p-3 rounded-xl flex items-center gap-2 border text-left transition ${
+                activeTab === 'ESTIMATES' ? 'bg-amber-50 text-amber-700 border-amber-200 font-bold' : 'bg-slate-50 text-slate-700 border-slate-100'
+              }`}
+            >
+              <FileText className="w-4 h-4 text-amber-600" />
+              <div>
+                <div>Estimates</div>
+                <div className="text-[10px] text-slate-400 font-normal">कच्चा पर्चा / कोटेशन</div>
               </div>
             </button>
 
