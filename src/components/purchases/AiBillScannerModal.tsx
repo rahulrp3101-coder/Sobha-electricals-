@@ -1,5 +1,4 @@
 import React, { useState, useRef, useMemo } from 'react';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Item, Party, CompanyProfile, InvoiceItem } from '../../types';
 import { findBestItemMatches, ItemMatchResult } from '../../services/fuzzyMatch';
 import { calculateItemGST, formatINR } from '../../services/gstCalculator';
@@ -243,7 +242,6 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
       const { base64, mimeType } = await fileToBase64(selectedFile);
       setStatusMessage('सप्लायर विवरण, GSTIN, बिल नंबर और आइटम्स पहचाने जा रहे हैं...');
 
-      const genAI = new GoogleGenerativeAI(keyToUse);
       const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '');
       const cleanMimeType = mimeType || 'image/jpeg';
 
@@ -287,51 +285,70 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
   ]
 }`;
 
-      // Requirement 1 & 2: Loop through modern supported Flash models
-      const candidateModels = [
+      // Direct REST API Call (Bypass SDK URL issues and End-of-life 404 errors)
+      const activeModels = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-flash-latest"
       ];
 
+      let rawOutput = '';
       let lastError: any = null;
-      let responseText = '';
 
-      for (const modelName of candidateModels) {
+      for (const model of activeModels) {
         try {
-          const model = genAI.getGenerativeModel({
-            model: modelName,
-            generationConfig: {
-              responseMimeType: "application/json",
-              maxOutputTokens: 8192,
-              temperature: 0.1,
-            },
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${encodeURIComponent(keyToUse)}`;
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              contents: [{
+                parts: [
+                  { text: ocrPrompt },
+                  {
+                    inlineData: {
+                      mimeType: cleanMimeType,
+                      data: cleanBase64
+                    }
+                  }
+                ]
+              }],
+              generationConfig: {
+                responseMimeType: "application/json",
+                temperature: 0.1,
+                maxOutputTokens: 8192
+              }
+            })
           });
-          const result = await model.generateContent([
-            {
-              inlineData: {
-                mimeType: cleanMimeType,
-                data: cleanBase64,
-              },
-            },
-            ocrPrompt,
-          ]);
-          if (result && result.response) {
-            responseText = result.response.text();
-            if (responseText) break; // सफलता मिलते ही लूप से बाहर आएं
+
+          if (!response.ok) {
+            const errText = await response.text();
+            console.warn(`Model ${model} failed (${response.status}):`, errText);
+            lastError = new Error(`Model ${model} (${response.status}): ${errText.slice(0, 150)}`);
+            continue;
+          }
+
+          const resData = await response.json();
+          const candidateText = resData?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (candidateText) {
+            rawOutput = candidateText;
+            break; // Break loop on successful response
           }
         } catch (err: any) {
           lastError = err;
-          console.warn(`Model ${modelName} failed, trying next candidate...`, err);
+          console.warn(`Model ${model} fetch failed, trying next candidate...`, err);
         }
       }
 
-      if (!responseText && lastError) {
-        throw lastError;
+      if (!rawOutput) {
+        if (lastError) throw lastError;
+        throw new Error("सर्वर से कोई डेटा प्राप्त नहीं हुआ (खाली रिस्पॉन्स)। कृपया API Key और नेटवर्क चेक करें।");
       }
 
       // Requirement 4: Debug log Raw OCR Response
-      console.log("Raw OCR Response:", responseText);
+      console.log("Raw OCR Response:", rawOutput);
+
+      const responseText = rawOutput;
 
       if (!responseText || responseText.trim().length === 0) {
         throw new Error("सर्वर से कोई डेटा प्राप्त नहीं हुआ (खाली रिस्पॉन्स)। कृपया API Key और नेटवर्क चेक करें।");
