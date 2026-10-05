@@ -288,46 +288,28 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
 }`;
 
       let responseText = '';
-      try {
-        const model = genAI.getGenerativeModel({
+      const model = genAI.getGenerativeModel(
+        {
           model: 'gemini-1.5-flash',
           generationConfig: {
             responseMimeType: 'application/json',
             temperature: 0.1,
             maxOutputTokens: 8192,
           },
-        });
-        const result = await model.generateContent([
-          {
-            inlineData: {
-              mimeType: cleanMimeType,
-              data: cleanBase64,
-            },
+        },
+        { apiVersion: 'v1beta' }
+      );
+
+      const result = await model.generateContent([
+        {
+          inlineData: {
+            mimeType: cleanMimeType,
+            data: cleanBase64,
           },
-          ocrPrompt,
-        ]);
-        responseText = result.response.text();
-      } catch (geminiErr: any) {
-        console.warn('Direct gemini-1.5-flash call issue, attempting fallback model:', geminiErr);
-        const fallbackModel = genAI.getGenerativeModel({
-          model: 'gemini-2.5-flash',
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.1,
-            maxOutputTokens: 8192,
-          },
-        });
-        const result = await fallbackModel.generateContent([
-          {
-            inlineData: {
-              mimeType: cleanMimeType,
-              data: cleanBase64,
-            },
-          },
-          ocrPrompt,
-        ]);
-        responseText = result.response.text();
-      }
+        },
+        ocrPrompt,
+      ]);
+      responseText = result.response.text();
 
       // Requirement 4: Debug log Raw OCR Response
       console.log("Raw OCR Response:", responseText);
