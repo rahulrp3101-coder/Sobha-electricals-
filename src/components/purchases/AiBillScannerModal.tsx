@@ -1,4 +1,5 @@
 import React, { useState, useRef, useMemo } from 'react';
+import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Item, Party, CompanyProfile, InvoiceItem } from '../../types';
 import { findBestItemMatches, ItemMatchResult } from '../../services/fuzzyMatch';
 import { calculateItemGST, formatINR } from '../../services/gstCalculator';
@@ -65,6 +66,7 @@ interface AiBillScannerModalProps {
     notes?: string;
   }) => void;
   showToast: (msg: string, isError?: boolean) => void;
+  onNavigateToSettings?: () => void;
 }
 
 export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
@@ -77,6 +79,7 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
   onSaveParty,
   onApplyScannedBill,
   showToast,
+  onNavigateToSettings,
 }) => {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -216,10 +219,20 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
     }
   };
 
-  // Perform AI OCR via server endpoint
+  // Perform AI OCR directly via client-side @google/generative-ai SDK (Zero Vercel server dependency)
   const handleStartScan = async () => {
     if (!selectedFile) {
       showToast('कृपया पहले बिल की फोटो या PDF चुनें', true);
+      return;
+    }
+
+    const keyToUse = (localStorage.getItem('gemini_user_api_key') || company?.geminiApiKey || '').trim();
+    if (!keyToUse) {
+      showToast('कृपया पहले Settings में जाकर अपनी Gemini API Key दर्ज करें।', true);
+      if (onNavigateToSettings) {
+        onClose();
+        onNavigateToSettings();
+      }
       return;
     }
 
@@ -230,39 +243,94 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
       const { base64, mimeType } = await fileToBase64(selectedFile);
       setStatusMessage('सप्लायर विवरण, GSTIN, बिल नंबर और आइटम्स पहचाने जा रहे हैं...');
 
-      const response = await fetch('/api/ai/scan-bill', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageBase64: base64,
-          mimeType,
-        }),
-      });
+      const genAI = new GoogleGenerativeAI(keyToUse);
+      const cleanBase64 = base64.replace(/^data:[^;]+;base64,/, '');
+      const cleanMimeType = mimeType || 'image/jpeg';
 
-      // Requirement 2: Safe Fetch Response Handling
-      const responseText = await response.text();
+      const ocrPrompt = `You are an expert Indian GST Tax Invoice and Purchase Bill OCR parser.
+Carefully read this vendor purchase bill / tax invoice image or document.
+Extract:
+1. Supplier / Vendor details: Legal/Trade Name, 15-character GSTIN, phone, address.
+2. Invoice / Bill Number and Bill Date (convert any DD/MM/YYYY or DD-MM-YYYY format to standard YYYY-MM-DD).
+3. Payment mode: CREDIT (if unpaid/due/khata), CASH, BANK_TRANSFER, or UPI.
+4. All line items purchased:
+   - Product name (clean, descriptive title without junk serial numbers)
+   - HSN/SAC code (if printed)
+   - Quantity (number)
+   - Unit (e.g. PCS, BOX, KG, PACK, MTR)
+   - MRP: Printed MRP or List Price.
+   - Discount %: Trade discount % on MRP or list price.
+   - Unit Purchase Rate / Net Rate (CRITICAL RULE): If bill has MRP and Discount %, Net Rate = MRP - (MRP * Discount / 100). For example, if MRP is 1000 and discount is 40%, unitPrice MUST BE 600 (not 1000). Cross-check with Taxable Amount = Quantity * unitPrice.
+   - GST % (0, 5, 12, 18, 28). If CGST 9% + SGST 9% is shown, return 18.
 
-      if (!response.ok) {
-        let errDesc = responseText || 'खाली रिस्पॉन्स';
-        try {
-          const parsedErr = JSON.parse(responseText);
-          if (parsedErr.error || parsedErr.message) {
-            errDesc = parsedErr.error || parsedErr.message;
-          }
-        } catch {
-          // not json
-        }
+Return ONLY valid, minified JSON without any explanatory text, markdown formatting, or preamble in this exact JSON structure:
+{
+  "supplierName": "string",
+  "supplierGstin": "string",
+  "supplierPhone": "string",
+  "supplierAddress": "string",
+  "billNumber": "string",
+  "billDate": "YYYY-MM-DD",
+  "paymentMode": "CREDIT",
+  "notes": "string",
+  "items": [
+    {
+      "name": "string",
+      "hsn": "string",
+      "quantity": 1,
+      "unit": "PCS",
+      "mrp": 100,
+      "discountPercent": 0,
+      "unitPrice": 100,
+      "taxRate": 18
+    }
+  ]
+}`;
 
-        if (response.status === 413 || /payload too large/i.test(errDesc)) {
-          throw new Error('सर्वर कनेक्ट नहीं हो सका या फोटो बहुत बड़ी है।');
-        } else if (/GEMINI_API_KEY|api key/i.test(errDesc)) {
-          throw new Error('Gemini API Key उपलब्ध नहीं है। कृपया सेटिंग्स में API Key जांचें।');
-        } else if (response.status >= 500) {
-          throw new Error(`सर्वर कनेक्ट नहीं हो सका (Error ${response.status})। कृपया थोड़ी देर बाद पुनः प्रयास करें या API Key चेक करें।`);
-        } else {
-          throw new Error(`सर्वर एरर (${response.status}): ${errDesc}`);
-        }
+      let responseText = '';
+      try {
+        const model = genAI.getGenerativeModel({
+          model: 'gemini-1.5-flash',
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1,
+            maxOutputTokens: 8192,
+          },
+        });
+        const result = await model.generateContent([
+          {
+            inlineData: {
+              mimeType: cleanMimeType,
+              data: cleanBase64,
+            },
+          },
+          ocrPrompt,
+        ]);
+        responseText = result.response.text();
+      } catch (geminiErr: any) {
+        console.warn('Direct gemini-1.5-flash call issue, attempting fallback model:', geminiErr);
+        const fallbackModel = genAI.getGenerativeModel({
+          model: 'gemini-2.5-flash',
+          generationConfig: {
+            responseMimeType: 'application/json',
+            temperature: 0.1,
+            maxOutputTokens: 8192,
+          },
+        });
+        const result = await fallbackModel.generateContent([
+          {
+            inlineData: {
+              mimeType: cleanMimeType,
+              data: cleanBase64,
+            },
+          },
+          ocrPrompt,
+        ]);
+        responseText = result.response.text();
       }
+
+      // Requirement 4: Debug log Raw OCR Response
+      console.log("Raw OCR Response:", responseText);
 
       if (!responseText || responseText.trim().length === 0) {
         throw new Error("सर्वर से कोई डेटा प्राप्त नहीं हुआ (खाली रिस्पॉन्स)। कृपया API Key और नेटवर्क चेक करें।");
@@ -283,32 +351,21 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
         }
       };
 
-      let data: any;
+      let raw: any;
       try {
         const clean = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
         const start = clean.indexOf('{');
         const end = clean.lastIndexOf('}');
         const jsonStr = start !== -1 && end !== -1 ? clean.slice(start, end + 1) : (start !== -1 ? clean.slice(start) : clean);
-        data = repairAndParseJson(jsonStr);
+        raw = repairAndParseJson(jsonStr);
       } catch (err) {
         throw new Error("सर्वर से अमान्य रिस्पॉन्स मिला: " + responseText.slice(0, 100));
       }
 
-      // Requirement 4: Debug log Raw OCR Response
-      console.log("Raw OCR Response:", data?.rawText || responseText);
-
-      if (!data || !data.success || !data.data) {
-        const errorMsg = data?.error || 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।';
-        if (/GEMINI_API_KEY|api key/i.test(errorMsg)) {
-          throw new Error('Gemini API Key उपलब्ध नहीं है। कृपया सेटिंग्स में API Key जांचें।');
-        }
-        if (/json|unexpected end|syntaxerror|अधूरा/i.test(errorMsg)) {
-          throw new Error('बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।');
-        }
-        throw new Error(errorMsg);
+      if (!raw || typeof raw !== 'object' || !Array.isArray(raw.items)) {
+        throw new Error('बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।');
       }
 
-      const raw = data.data;
       setStatusMessage('इन्वेंट्री के साथ स्मार्ट Fuzzy Matching व Aliases की जांच हो रही है...');
 
       // Smart Supplier Matching: Match by GSTIN or by similar name
@@ -671,6 +728,33 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
           {scanStep === 'UPLOAD' ? (
             /* ---------------- STEP 1: UPLOAD / CAMERA ---------------- */
             <div className="space-y-4">
+              {/* API Key Missing Alert Banner (Requirement 2) */}
+              {!((localStorage.getItem('gemini_user_api_key') || company?.geminiApiKey || '').trim()) && (
+                <div className="p-4 bg-amber-50 border-2 border-amber-300 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-amber-900 animate-in fade-in shadow-xs">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                    <div>
+                      <h4 className="text-xs sm:text-sm font-bold">Google Gemini API Key आवश्यक है</h4>
+                      <p className="text-xs text-amber-800 mt-0.5 leading-relaxed">
+                        कृपया पहले Settings में जाकर अपनी Gemini API Key दर्ज करें।
+                      </p>
+                    </div>
+                  </div>
+                  {onNavigateToSettings && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onNavigateToSettings();
+                      }}
+                      className="px-4 py-2 bg-amber-600 hover:bg-amber-700 active:scale-95 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center justify-center gap-1.5 cursor-pointer shrink-0"
+                    >
+                      <span>⚙️ Settings में जाएं</span>
+                    </button>
+                  )}
+                </div>
+              )}
+
               {/* Hidden file inputs for Camera & File Picker */}
               <input
                 ref={fileInputRef}

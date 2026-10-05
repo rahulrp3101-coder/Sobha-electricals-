@@ -581,6 +581,7 @@ export default function App() {
               setViewingInvoice(inv);
               setViewingFormat(fmt);
             }}
+            onNavigateToSettings={() => setActiveTab('SETTINGS')}
           />
         )}
 

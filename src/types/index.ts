@@ -35,6 +35,7 @@ export interface CompanyProfile {
   upiId: string;
   invoicePrefix: string;
   terms: string[];
+  geminiApiKey?: string;
   updatedAt?: string;
   createdAt?: string;
   is_synced?: boolean;

@@ -45,10 +45,19 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
   const [saveAlertMessage, setSaveAlertMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
+  // AI OCR & Gemini Configuration State (Requirement 1)
+  const [geminiApiKey, setGeminiApiKey] = useState<string>(() => {
+    return localStorage.getItem('gemini_user_api_key') || company?.geminiApiKey || '';
+  });
+  const [showApiKey, setShowApiKey] = useState(false);
+
   // Requirement 3: Load saved profile on mount and when company prop updates
   useEffect(() => {
     if (company && company.name) {
       setFormData({ ...company });
+      if (company.geminiApiKey) {
+        setGeminiApiKey(company.geminiApiKey);
+      }
     }
   }, [company]);
 
@@ -58,6 +67,9 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
         const saved = await getSavedCompanyProfile();
         if (saved && saved.name) {
           setFormData(saved);
+          if (saved.geminiApiKey) {
+            setGeminiApiKey(saved.geminiApiKey);
+          }
         }
       } catch (err) {
         console.warn('Error loading saved profile in settings:', err);
@@ -273,8 +285,25 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
     setIsSaving(true);
     setSaveAlertMessage(null);
     try {
-      await onSaveCompany(formData);
-      setSaveAlertMessage('दुकान का विवरण सफलतापूर्वक सेव हो गया!');
+      const cleanApiKey = geminiApiKey.trim();
+      localStorage.setItem('gemini_user_api_key', cleanApiKey);
+
+      try {
+        const { putToStore } = await import('../../db/indexedDB');
+        await putToStore('settings', {
+          id: 'gemini_config',
+          apiKey: cleanApiKey,
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (idbErr) {
+        console.warn('Could not save gemini_config to settings store:', idbErr);
+      }
+
+      await onSaveCompany({
+        ...formData,
+        geminiApiKey: cleanApiKey,
+      });
+      setSaveAlertMessage('दुकान का विवरण व AI सेटिंग्स सफलतापूर्वक सेव हो गया!');
       setIsSavedToast(true);
       setTimeout(() => {
         setIsSavedToast(false);
@@ -899,6 +928,63 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
               placeholder="1. बिका हुआ सामान वापस नहीं होगा।&#10;2. बिल के साथ ही एक्सचेंज संभव है।&#10;3. धन्यवाद, फिर पधारें!"
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-purple-600 font-medium"
             />
+          </div>
+        </div>
+
+        {/* Section 5: AI & Scanner Settings (AI OCR Configuration - Requirement 1) */}
+        <div className="bg-white rounded-2xl border border-slate-200 p-4 sm:p-6 shadow-2xs space-y-4">
+          <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-purple-600" />
+              <h3 className="text-sm font-bold text-slate-900">
+                AI & स्कैनर सेटिंग्स (AI OCR Configuration)
+              </h3>
+            </div>
+            <span className="text-[10px] font-bold bg-purple-50 text-purple-700 border border-purple-200 px-2.5 py-0.5 rounded-full flex items-center gap-1">
+              Google Gemini Vision
+            </span>
+          </div>
+
+          <div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-1.5">
+              <label className="block text-xs font-semibold text-slate-700">
+                Google Gemini API Key
+              </label>
+              <a
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noreferrer"
+                className="text-[11px] font-bold text-blue-600 hover:text-blue-700 flex items-center gap-1 hover:underline"
+              >
+                <span>निःशुल्क API Key प्राप्त करें (Google AI Studio)</span>
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </div>
+
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                <KeyRound className="w-4 h-4" />
+              </div>
+              <input
+                type={showApiKey ? 'text' : 'password'}
+                value={geminiApiKey}
+                onChange={e => setGeminiApiKey(e.target.value)}
+                placeholder="AIzaSy..."
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl pl-9 pr-10 py-2.5 text-xs sm:text-sm text-slate-900 focus:bg-white focus:outline-none focus:border-purple-600 font-mono tracking-wider"
+              />
+              <button
+                type="button"
+                onClick={() => setShowApiKey(prev => !prev)}
+                className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-600 transition cursor-pointer"
+                title={showApiKey ? 'Hide API Key' : 'Show API Key'}
+              >
+                {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-500 mt-2 flex items-center gap-1.5 leading-relaxed">
+              <span>💡 बिल ऑटो-स्कैन के लिए Google AI Studio से प्राप्त निःशुल्क API Key यहाँ दर्ज करें।</span>
+            </p>
           </div>
         </div>
 

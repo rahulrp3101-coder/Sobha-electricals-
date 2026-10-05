@@ -25,6 +25,7 @@ interface PurchasesAndVendorsProps {
   onSaveItem?: (item: Item) => Promise<void>;
   onRecordPayment: (payment: PaymentTransaction) => Promise<void>;
   onViewInvoice?: (invoice: Invoice, format: 'thermal' | 'a4') => void;
+  onNavigateToSettings?: () => void;
 }
 
 export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
@@ -40,6 +41,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
   onSaveItem,
   onRecordPayment,
   onViewInvoice,
+  onNavigateToSettings,
 }) => {
   // Main Sub-tabs: 'PURCHASE_BILLS' | 'SUPPLIERS' | 'RETURNS'
   const [activeTab, setActiveTab] = useState<'PURCHASE_BILLS' | 'SUPPLIERS' | 'RETURNS'>('PURCHASE_BILLS');
@@ -2785,6 +2787,7 @@ export const PurchasesAndVendors: React.FC<PurchasesAndVendorsProps> = ({
         onSaveParty={onSaveParty}
         onApplyScannedBill={handleApplyScannedBill}
         showToast={showToast}
+        onNavigateToSettings={onNavigateToSettings}
       />
     </div>
   );

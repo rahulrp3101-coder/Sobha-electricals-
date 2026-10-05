@@ -183,6 +183,9 @@ export async function saveCompanyProfile(profile: CompanyProfile): Promise<Compa
       localStorage.setItem('vyapar_company_profile', JSON.stringify(cleanProfile));
       localStorage.setItem('vyapar_company_profile_saved', 'true');
       localStorage.setItem('vyapar_initial_seed_done', 'true');
+      if (cleanProfile.geminiApiKey) {
+        localStorage.setItem('gemini_user_api_key', cleanProfile.geminiApiKey);
+      }
     } catch (e) {
       console.warn('localStorage cache failed:', e);
     }
