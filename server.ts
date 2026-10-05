@@ -589,10 +589,14 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
         responseMimeType: 'application/json',
         responseSchema,
         maxOutputTokens: 8192,
+        temperature: 0.1,
       },
     });
 
-    const rawText = response.text;
+    const rawText = response.text || '';
+    // Requirement 4: Debug log Raw OCR Response
+    console.log("Raw OCR Response:", rawText);
+
     if (!rawText || !rawText.trim()) {
       return res.status(422).json({
         success: false,
@@ -600,7 +604,7 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
       });
     }
 
-    // Step 1: Strip Markdown backticks and extraneous wrappers (Requirement 1)
+    // Step 1: Strip Markdown backticks and extraneous wrappers
     const cleanJsonText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
 
     // Step 2: Extract from first '{' to last '}'
@@ -610,25 +614,87 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
     let validJsonString = cleanJsonText;
     if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd >= jsonStart) {
       validJsonString = cleanJsonText.slice(jsonStart, jsonEnd + 1);
+    } else if (jsonStart !== -1) {
+      // Truncated before closing brace
+      validJsonString = cleanJsonText.slice(jsonStart);
     }
 
-    // Step 3: Crash-Proof Error Handling with try...catch (Requirement 3)
+    // Step 3: Requirement 3 - Auto-repair truncated JSON
+    function repairAndParseJson(str: string): any {
+      try {
+        return JSON.parse(str);
+      } catch (e) {
+        let trimmed = str.trim();
+        // Remove trailing comma
+        trimmed = trimmed.replace(/,\s*$/, '');
+        // If odd number of unescaped quotes, close quote
+        const quoteCount = (trimmed.match(/(?<!\\)"/g) || []).length;
+        if (quoteCount % 2 !== 0) {
+          trimmed += '"';
+        }
+
+        // Specific pattern from user: if (!trimmed.endsWith('}')) trimmed += '}'; if (!trimmed.endsWith(']}')) ...
+        try {
+          let candidate = trimmed;
+          if (!candidate.endsWith('}')) candidate += '}';
+          if (!candidate.endsWith(']}')) candidate = candidate.replace(/\}?$/, ']}');
+          return JSON.parse(candidate);
+        } catch {
+          // General balance auto-repair
+          const openBrackets: string[] = [];
+          let inString = false;
+          let isEscaped = false;
+
+          for (let i = 0; i < trimmed.length; i++) {
+            const char = trimmed[i];
+            if (isEscaped) {
+              isEscaped = false;
+              continue;
+            }
+            if (char === '\\') {
+              isEscaped = true;
+              continue;
+            }
+            if (char === '"') {
+              inString = !inString;
+              continue;
+            }
+            if (!inString) {
+              if (char === '{' || char === '[') {
+                openBrackets.push(char);
+              } else if (char === '}') {
+                if (openBrackets.length && openBrackets[openBrackets.length - 1] === '{') {
+                  openBrackets.pop();
+                }
+              } else if (char === ']') {
+                if (openBrackets.length && openBrackets[openBrackets.length - 1] === '[') {
+                  openBrackets.pop();
+                }
+              }
+            }
+          }
+
+          let repaired = trimmed.replace(/,\s*$/, '');
+          while (openBrackets.length > 0) {
+            const last = openBrackets.pop();
+            if (last === '{') repaired += '}';
+            else if (last === '[') repaired += ']';
+          }
+
+          return JSON.parse(repaired);
+        }
+      }
+    }
+
     let parsedData: any;
     try {
-      parsedData = JSON.parse(validJsonString);
+      parsedData = repairAndParseJson(validJsonString);
     } catch (parseErr) {
-      console.warn('Initial JSON.parse failed on AI output, attempting cleanup repair:', parseErr);
-      try {
-        // Attempt repairing trailing commas or small syntax anomalies
-        const trimmed = validJsonString.replace(/,\s*([}\]])/g, '$1');
-        parsedData = JSON.parse(trimmed);
-      } catch (finalParseErr) {
-        console.error('Failed to parse AI bill scan JSON:', finalParseErr);
-        return res.status(422).json({
-          success: false,
-          error: 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।',
-        });
-      }
+      console.error('Failed to parse AI bill scan JSON even after auto-repair:', parseErr);
+      return res.status(422).json({
+        success: false,
+        error: 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।',
+      });
     }
 
     if (!parsedData || typeof parsedData !== 'object' || !Array.isArray(parsedData.items)) {
@@ -638,7 +704,7 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
       });
     }
 
-    return res.json({ success: true, data: parsedData });
+    return res.json({ success: true, data: parsedData, rawText });
   } catch (err: any) {
     console.error('Error in /api/ai/scan-bill:', err);
     const isJsonOrIncomplete = /json|unexpected end|syntaxerror|parse/i.test(err.message || '');

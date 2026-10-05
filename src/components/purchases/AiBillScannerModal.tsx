@@ -268,16 +268,34 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
         throw new Error("सर्वर से कोई डेटा प्राप्त नहीं हुआ (खाली रिस्पॉन्स)। कृपया API Key और नेटवर्क चेक करें।");
       }
 
+      // Requirement 3: Auto-repair truncated JSON helper
+      const repairAndParseJson = (str: string): any => {
+        try {
+          return JSON.parse(str);
+        } catch (e) {
+          let trimmed = str.trim();
+          trimmed = trimmed.replace(/,\s*$/, '');
+          const quoteCount = (trimmed.match(/(?<!\\)"/g) || []).length;
+          if (quoteCount % 2 !== 0) trimmed += '"';
+          if (!trimmed.endsWith('}')) trimmed += '}';
+          if (!trimmed.endsWith(']}')) trimmed = trimmed.replace(/\}?$/, ']}');
+          return JSON.parse(trimmed);
+        }
+      };
+
       let data: any;
       try {
         const clean = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
         const start = clean.indexOf('{');
         const end = clean.lastIndexOf('}');
-        const jsonStr = start !== -1 && end !== -1 ? clean.slice(start, end + 1) : clean;
-        data = JSON.parse(jsonStr);
+        const jsonStr = start !== -1 && end !== -1 ? clean.slice(start, end + 1) : (start !== -1 ? clean.slice(start) : clean);
+        data = repairAndParseJson(jsonStr);
       } catch (err) {
         throw new Error("सर्वर से अमान्य रिस्पॉन्स मिला: " + responseText.slice(0, 100));
       }
+
+      // Requirement 4: Debug log Raw OCR Response
+      console.log("Raw OCR Response:", data?.rawText || responseText);
 
       if (!data || !data.success || !data.data) {
         const errorMsg = data?.error || 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।';
