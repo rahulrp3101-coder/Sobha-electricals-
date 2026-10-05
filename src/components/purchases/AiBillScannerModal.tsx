@@ -287,39 +287,27 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
   ]
 }`;
 
-      let responseText = '';
-      try {
-        const model = genAI.getGenerativeModel({
-          model: 'gemini-1.5-flash',
-          generationConfig: {
-            responseMimeType: 'application/json',
-            temperature: 0.1,
-            maxOutputTokens: 8192,
-          },
-        });
+      // Requirement 1 & 2: Loop through modern supported Flash models
+      const candidateModels = [
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-flash-latest"
+      ];
 
-        const result = await model.generateContent([
-          {
-            inlineData: {
-              mimeType: cleanMimeType,
-              data: cleanBase64,
-            },
-          },
-          ocrPrompt,
-        ]);
-        responseText = result.response.text();
-      } catch (err: any) {
-        console.warn('gemini-1.5-flash call issue, checking for 404 fallback:', err);
-        if (err?.message?.includes('404') || /404|not found/i.test(err?.message || '')) {
-          const fallbackModel = genAI.getGenerativeModel({
-            model: 'gemini-1.5-pro',
+      let lastError: any = null;
+      let responseText = '';
+
+      for (const modelName of candidateModels) {
+        try {
+          const model = genAI.getGenerativeModel({
+            model: modelName,
             generationConfig: {
-              responseMimeType: 'application/json',
-              temperature: 0.1,
+              responseMimeType: "application/json",
               maxOutputTokens: 8192,
+              temperature: 0.1,
             },
           });
-          const result = await fallbackModel.generateContent([
+          const result = await model.generateContent([
             {
               inlineData: {
                 mimeType: cleanMimeType,
@@ -328,10 +316,18 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
             },
             ocrPrompt,
           ]);
-          responseText = result.response.text();
-        } else {
-          throw err;
+          if (result && result.response) {
+            responseText = result.response.text();
+            if (responseText) break; // सफलता मिलते ही लूप से बाहर आएं
+          }
+        } catch (err: any) {
+          lastError = err;
+          console.warn(`Model ${modelName} failed, trying next candidate...`, err);
         }
+      }
+
+      if (!responseText && lastError) {
+        throw lastError;
       }
 
       // Requirement 4: Debug log Raw OCR Response
