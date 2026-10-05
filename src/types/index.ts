@@ -206,7 +206,7 @@ export interface DaySummary {
 
 export interface SyncQueueItem {
   id: string;
-  entity: 'INVOICE' | 'PURCHASE' | 'ITEM' | 'PARTY' | 'PAYMENT' | 'EXPENSE';
+  entity: 'INVOICE' | 'PURCHASE' | 'ITEM' | 'PARTY' | 'PAYMENT' | 'EXPENSE' | 'ITEMS' | 'PARTIES' | 'INVOICES' | 'PURCHASES' | 'EXPENSES' | 'PAYMENTS' | string;
   action: 'CREATE' | 'UPDATE' | 'DELETE' | 'INSERT';
   payload: any;
   timestamp: number;

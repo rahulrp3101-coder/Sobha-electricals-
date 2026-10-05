@@ -42,6 +42,7 @@ import { checkAndRunDailyAutoBackup } from './services/backupService';
 import { 
   syncMutation, 
   pullFromSupabaseToIndexedDB, 
+  performFullTwoWaySync,
   subscribeToRealtimeSync, 
   getSupabaseConfig 
 } from './services/supabaseService';
@@ -186,13 +187,13 @@ export default function App() {
       setExpenses(allExpenses);
       await refreshSyncCount();
 
-      // Cloud Two-Way Sync on Load (Mobile <-> PC Sync)
+      // Cloud Two-Way Sync on Load (Push pending local changes/deletes first, then pull reconciled state)
       if (typeof navigator !== 'undefined' && navigator.onLine) {
         const cfg = getSupabaseConfig();
         if (cfg.isConnected) {
-          pullFromSupabaseToIndexedDB().then(res => {
-            if (res.pulledCount > 0) {
-              // Reload in-memory state with freshly pulled cloud invoices and parties
+          performFullTwoWaySync().then(res => {
+            if (res.pulledCount > 0 || res.pushedCount > 0) {
+              // Reload in-memory state with freshly reconciled cloud invoices and parties
               Promise.all([
                 getAllFromStore<Item>('items'),
                 getAllFromStore<Party>('parties'),
@@ -344,20 +345,24 @@ export default function App() {
     return updated;
   };
 
-  // Handle Delete Inventory Item (Remove from IndexedDB + Supabase)
+  // Handle Delete Inventory Item (Remove from IndexedDB + Supabase immediately - Requirement 1)
   const handleDeleteItem = async (itemId: string) => {
     // Optimistic UI update: disappear immediately
     setItems(prev => prev.filter(i => i.id !== itemId));
     await deleteItemTransaction(itemId);
     await loadDatabaseData();
+    // Direct cloud deletion if online, or registered in sync_queue if offline
+    syncMutation('items', { id: itemId }, 'DELETE').catch(() => {});
   };
 
-  // Handle Delete Party (Remove from IndexedDB + Supabase)
+  // Handle Delete Party (Remove from IndexedDB + Supabase immediately - Requirement 1)
   const handleDeleteParty = async (partyId: string) => {
     // Optimistic UI update: disappear immediately
     setParties(prev => prev.filter(p => p.id !== partyId));
     await deletePartyTransaction(partyId);
     await loadDatabaseData();
+    // Direct cloud deletion if online, or registered in sync_queue if offline
+    syncMutation('parties', { id: partyId }, 'DELETE').catch(() => {});
   };
 
   // Handle Toggle Party Blacklist (Mark inactive so they cannot be selected for new bills, but preserve ledger)

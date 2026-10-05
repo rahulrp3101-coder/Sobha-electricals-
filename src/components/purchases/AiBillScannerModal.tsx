@@ -95,6 +95,34 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
   const cameraInputRef = useRef<HTMLInputElement>(null);
 
+  // Calculate live preview totals for the scanned bill (Tax Exclusive + MRP Savings)
+  // Hook declared unconditionally before early return to strictly adhere to React Rules of Hooks
+  const scannedTotals = useMemo(() => {
+    if (!scannedBill) return { mrpTotal: 0, discountSaved: 0, taxable: 0, tax: 0, grand: 0 };
+    let mrpTotal = 0;
+    let taxable = 0;
+    let tax = 0;
+
+    scannedBill.items.forEach(it => {
+      const lineMrp = (it.mrp || it.unitPrice) * it.quantity;
+      const lineTaxable = it.unitPrice * it.quantity;
+      const lineTax = (lineTaxable * it.taxRate) / 100;
+      mrpTotal += lineMrp;
+      taxable += lineTaxable;
+      tax += lineTax;
+    });
+
+    const discountSaved = Math.max(0, mrpTotal - taxable);
+
+    return {
+      mrpTotal,
+      discountSaved,
+      taxable,
+      tax,
+      grand: taxable + tax,
+    };
+  }, [scannedBill]);
+
   if (!isOpen) return null;
 
   // Compress image if needed using HTML5 Canvas to keep transfer fast & reliable
@@ -339,33 +367,6 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
       }),
     });
   };
-
-  // Calculate live preview totals for the scanned bill (Tax Exclusive + MRP Savings)
-  const scannedTotals = useMemo(() => {
-    if (!scannedBill) return { mrpTotal: 0, discountSaved: 0, taxable: 0, tax: 0, grand: 0 };
-    let mrpTotal = 0;
-    let taxable = 0;
-    let tax = 0;
-
-    scannedBill.items.forEach(it => {
-      const lineMrp = (it.mrp || it.unitPrice) * it.quantity;
-      const lineTaxable = it.unitPrice * it.quantity;
-      const lineTax = (lineTaxable * it.taxRate) / 100;
-      mrpTotal += lineMrp;
-      taxable += lineTaxable;
-      tax += lineTax;
-    });
-
-    const discountSaved = Math.max(0, mrpTotal - taxable);
-
-    return {
-      mrpTotal,
-      discountSaved,
-      taxable,
-      tax,
-      grand: taxable + tax,
-    };
-  }, [scannedBill]);
 
   // Confirm mapping and auto-fill purchase form
   const handleConfirmAndApply = async () => {

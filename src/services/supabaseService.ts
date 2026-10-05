@@ -9,7 +9,7 @@ import {
   Item, Party, Invoice, PaymentTransaction, Expense, SyncQueueItem, CompanyProfile 
 } from '../types';
 import { 
-  getAllFromStore, putToStore, bulkPutToStore, clearStore, getDB 
+  getAllFromStore, putToStore, bulkPutToStore, clearStore, deleteFromStore, getDB 
 } from '../db/indexedDB';
 
 export interface SupabaseConfig {
@@ -258,6 +258,72 @@ export async function testSupabaseConnection(): Promise<{ success: boolean; mess
   }
 }
 
+// =========================================================
+// DELETED RECORDS TOMBSTONE TRACKER (Prevents Ghost Reappearance)
+// =========================================================
+interface Tombstone {
+  id: string;
+  table: string; // 'items', 'parties', 'invoices', 'purchases', 'expenses', 'payments'
+  deletedAt: number;
+}
+
+const TOMBSTONE_STORAGE_KEY = 'vyapar_deleted_records_tombstones';
+const TOMBSTONE_TTL_MS = 14 * 24 * 60 * 60 * 1000; // 14 days retention
+
+export function recordDeletedTombstone(table: string, id: string): void {
+  if (!id) return;
+  try {
+    const raw = localStorage.getItem(TOMBSTONE_STORAGE_KEY);
+    const list: Tombstone[] = raw ? JSON.parse(raw) : [];
+    const now = Date.now();
+    const cleanTable = table.toLowerCase();
+    const filtered = list.filter(t => (now - t.deletedAt) < TOMBSTONE_TTL_MS && t.id !== id);
+    filtered.push({ id, table: cleanTable, deletedAt: now });
+    localStorage.setItem(TOMBSTONE_STORAGE_KEY, JSON.stringify(filtered));
+  } catch (err) {
+    console.warn('Failed to record tombstone:', err);
+  }
+}
+
+export function getDeletedTombstoneIds(table?: string): Set<string> {
+  const ids = new Set<string>();
+  try {
+    const raw = localStorage.getItem(TOMBSTONE_STORAGE_KEY);
+    if (!raw) return ids;
+    const list: Tombstone[] = JSON.parse(raw);
+    const now = Date.now();
+    const cleanTable = table ? table.toLowerCase() : null;
+    for (const t of list) {
+      if ((now - t.deletedAt) < TOMBSTONE_TTL_MS) {
+        if (!cleanTable || t.table === cleanTable || (cleanTable === 'invoices' && t.table === 'purchases')) {
+          ids.add(t.id);
+        }
+      }
+    }
+  } catch {}
+  return ids;
+}
+
+export function clearTombstone(id: string): void {
+  try {
+    const raw = localStorage.getItem(TOMBSTONE_STORAGE_KEY);
+    if (!raw) return;
+    const list: Tombstone[] = JSON.parse(raw);
+    const remaining = list.filter(t => t.id !== id);
+    localStorage.setItem(TOMBSTONE_STORAGE_KEY, JSON.stringify(remaining));
+  } catch {}
+}
+
+export function mapEntityToTable(entity: string): 'items' | 'parties' | 'invoices' | 'purchases' | 'expenses' | 'payments' {
+  const norm = (entity || '').toUpperCase();
+  if (norm === 'ITEM' || norm === 'ITEMS') return 'items';
+  if (norm === 'PARTY' || norm === 'PARTIES') return 'parties';
+  if (norm === 'PURCHASE' || norm === 'PURCHASES') return 'purchases';
+  if (norm === 'EXPENSE' || norm === 'EXPENSES') return 'expenses';
+  if (norm === 'PAYMENT' || norm === 'PAYMENTS') return 'payments';
+  return 'invoices';
+}
+
 /**
  * Pushes pending local changes from IndexedDB to Supabase
  * OPTIMIZED: Incremental Delta sync, bulk array upserts, and parallel Promise.all (Sub-second execution)
@@ -301,7 +367,6 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
 
     // Fast-path: If nothing has changed, finish immediately in ~1ms
     if (totalPendingCount === 0) {
-      try { await clearStore('sync_queue'); } catch {}
       const nowTimeStr = new Date().toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' });
       saveSupabaseConfig({ lastSyncedAt: `${new Date().toLocaleDateString('hi-IN')} ${nowTimeStr}` });
       return { success: true, pushedCount: 0 };
@@ -386,53 +451,104 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
     }));
 
     // 4. Parallel Bulk Upsert & Deletes to Supabase via Promise.all
-    const uploadTasks: PromiseLike<any>[] = [];
-    if (itemRows.length > 0) uploadTasks.push(client.from('items').upsert(itemRows, { onConflict: 'id' }));
-    if (partyRows.length > 0) uploadTasks.push(client.from('parties').upsert(partyRows, { onConflict: 'id' }));
-    if (invoiceRows.length > 0) uploadTasks.push(client.from('invoices').upsert(invoiceRows, { onConflict: 'id' }));
-    if (purchaseRows.length > 0) uploadTasks.push(client.from('purchases').upsert(purchaseRows, { onConflict: 'id' }));
-    if (expenseRows.length > 0) uploadTasks.push(client.from('expenses').upsert(expenseRows, { onConflict: 'id' }));
-    if (paymentRows.length > 0) uploadTasks.push(client.from('payments').upsert(paymentRows, { onConflict: 'id' }));
-
-    for (const dq of pendingDeletes) {
-      const table = dq.entity === 'ITEM' ? 'items' : dq.entity === 'PARTY' ? 'parties' : dq.entity === 'PURCHASE' ? 'purchases' : dq.entity === 'EXPENSE' ? 'expenses' : dq.entity === 'PAYMENT' ? 'payments' : 'invoices';
-      const targetId = dq.payload?.id || dq.id.replace(/^sync-del-(inv|itm|pty|exp|pay)-/, '');
-      uploadTasks.push(client.from(table).delete().eq('id', targetId));
-    }
-
-    const uploadResults = await Promise.all(uploadTasks);
-    for (const res of uploadResults) {
-      if (res?.error) {
-        console.warn('Batch upsert warning:', res.error);
-      }
-    }
-
-    // 5. Batch Update in Local IndexedDB (Single transaction per store via bulkPutToStore)
-    await Promise.all([
-      pendingItems.length > 0 
-        ? bulkPutToStore('items', pendingItems.map(i => ({ ...i, is_synced: true, isSynced: true }))) 
-        : Promise.resolve(),
-      pendingParties.length > 0 
-        ? bulkPutToStore('parties', pendingParties.map(p => ({ ...p, is_synced: true, isSynced: true }))) 
-        : Promise.resolve(),
-      (pendingInvoices.length > 0 || pendingPurchases.length > 0) 
-        ? bulkPutToStore('invoices', [...pendingInvoices, ...pendingPurchases].map(inv => ({ ...inv, is_synced: true, isSynced: true }))) 
-        : Promise.resolve(),
-      pendingExpenses.length > 0 
-        ? bulkPutToStore('expenses', pendingExpenses.map(e => ({ ...e, is_synced: true, isSynced: true }))) 
-        : Promise.resolve(),
-      pendingPayments.length > 0 
-        ? bulkPutToStore('payments', pendingPayments.map(p => ({ ...p, is_synced: true, isSynced: true }))) 
-        : Promise.resolve(),
-      clearStore('sync_queue'),
+    // Rule 1: Include pendingExpenses in upload tasks to Supabase 'expenses' table
+    // Rule 2: Handle queue deletions from Supabase tables
+    // Rule 4: Strict error checking for upsert responses
+    const [
+      itemRes,
+      partyRes,
+      invoiceRes,
+      purchaseRes,
+      expenseRes,
+      paymentRes,
+      ...deleteResults
+    ] = await Promise.all([
+      itemRows.length > 0 
+        ? client.from('items').upsert(itemRows, { onConflict: 'id' }) 
+        : Promise.resolve({ error: null }),
+      partyRows.length > 0 
+        ? client.from('parties').upsert(partyRows, { onConflict: 'id' }) 
+        : Promise.resolve({ error: null }),
+      invoiceRows.length > 0 
+        ? client.from('invoices').upsert(invoiceRows, { onConflict: 'id' }) 
+        : Promise.resolve({ error: null }),
+      purchaseRows.length > 0 
+        ? client.from('purchases').upsert(purchaseRows, { onConflict: 'id' }) 
+        : Promise.resolve({ error: null }),
+      expenseRows.length > 0 
+        ? client.from('expenses').upsert(expenseRows, { onConflict: 'id' }) 
+        : Promise.resolve({ error: null }),
+      paymentRows.length > 0 
+        ? client.from('payments').upsert(paymentRows, { onConflict: 'id' }) 
+        : Promise.resolve({ error: null }),
+      // Rule 2: Process sync_queue DELETE actions
+      ...pendingDeletes.map(dq => {
+        const table = mapEntityToTable(dq.entity);
+        const targetId = dq.payload?.id || dq.payload?.itemId || dq.payload?.partyId || dq.id.replace(/^sync-del-(inv|itm|pty|exp|pay|items|parties|invoices|purchases|expenses|payments)-/, '');
+        if (targetId) {
+          recordDeletedTombstone(table, targetId);
+          return client.from(table).delete().eq('id', targetId);
+        }
+        return Promise.resolve({ error: null });
+      }),
     ]);
+
+    // Check errors
+    if (itemRes.error) console.error('Supabase items upsert error:', itemRes.error);
+    if (partyRes.error) console.error('Supabase parties upsert error:', partyRes.error);
+    if (invoiceRes.error) console.error('Supabase invoices upsert error:', invoiceRes.error);
+    if (purchaseRes.error) console.error('Supabase purchases upsert error:', purchaseRes.error);
+    if (expenseRes.error) console.error('Supabase expenses upsert error:', expenseRes.error);
+    if (paymentRes.error) console.error('Supabase payments upsert error:', paymentRes.error);
+
+    let successfullyPushedCount = 0;
+    const dbUpdateTasks: Promise<any>[] = [];
+
+    // Rule 4: STRICT ERROR CHECKING - ONLY mark local records as is_synced: true if cloud upsert succeeded (no error)!
+    if (!itemRes.error && pendingItems.length > 0) {
+      dbUpdateTasks.push(bulkPutToStore('items', pendingItems.map(i => ({ ...i, is_synced: true, isSynced: true }))));
+      successfullyPushedCount += pendingItems.length;
+    }
+    if (!partyRes.error && pendingParties.length > 0) {
+      dbUpdateTasks.push(bulkPutToStore('parties', pendingParties.map(p => ({ ...p, is_synced: true, isSynced: true }))));
+      successfullyPushedCount += pendingParties.length;
+    }
+    if (!invoiceRes.error && pendingInvoices.length > 0) {
+      dbUpdateTasks.push(bulkPutToStore('invoices', pendingInvoices.map(inv => ({ ...inv, is_synced: true, isSynced: true }))));
+      successfullyPushedCount += pendingInvoices.length;
+    }
+    if (!purchaseRes.error && pendingPurchases.length > 0) {
+      dbUpdateTasks.push(bulkPutToStore('invoices', pendingPurchases.map(p => ({ ...p, is_synced: true, isSynced: true }))));
+      successfullyPushedCount += pendingPurchases.length;
+    }
+    if (!expenseRes.error && pendingExpenses.length > 0) {
+      dbUpdateTasks.push(bulkPutToStore('expenses', pendingExpenses.map(e => ({ ...e, is_synced: true, isSynced: true }))));
+      successfullyPushedCount += pendingExpenses.length;
+    }
+    if (!paymentRes.error && pendingPayments.length > 0) {
+      dbUpdateTasks.push(bulkPutToStore('payments', pendingPayments.map(p => ({ ...p, is_synced: true, isSynced: true }))));
+      successfullyPushedCount += pendingPayments.length;
+    }
+
+    // Rule 2 & 4: Only remove delete actions from sync_queue that succeeded on Supabase
+    pendingDeletes.forEach((dq, index) => {
+      const delRes = deleteResults[index];
+      if (!delRes?.error) {
+        dbUpdateTasks.push(deleteFromStore('sync_queue', dq.id).catch(() => {}));
+        successfullyPushedCount += 1;
+      } else {
+        console.error(`Supabase delete error for queue item ${dq.id}:`, delRes.error);
+      }
+    });
+
+    await Promise.all(dbUpdateTasks);
 
     // Update last sync time
     const nowTimeStr = new Date().toLocaleTimeString('hi-IN', { hour: '2-digit', minute: '2-digit' });
     const nowDateStr = new Date().toLocaleDateString('hi-IN');
     saveSupabaseConfig({ lastSyncedAt: `${nowDateStr} ${nowTimeStr}` });
 
-    return { success: true, pushedCount: totalPendingCount };
+    return { success: true, pushedCount: successfullyPushedCount };
   } catch (err: any) {
     console.error('Supabase batch push error:', err);
     return { success: false, pushedCount: 0, error: err.message };
@@ -440,8 +556,10 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
 }
 
 /**
- * Pulls changes from Supabase cloud into local IndexedDB (Two-Way Sync)
- * OPTIMIZED: Parallel queries via Promise.all and fast bulkPutToStore
+ * Pulls changes from Supabase cloud into local IndexedDB (Safe Sync Pull - Requirement 2 & 3)
+ * Prevents 'Ghost Reappearance' by checking tombstone registry and sync_queue deleted records.
+ * Rule 3: Do NOT overwrite local records in IndexedDB that have 'is_synced === false'
+ * Reconciles IndexedDB so only genuinely active records remain.
  */
 export async function pullFromSupabaseToIndexedDB(): Promise<{ success: boolean; pulledCount: number; error?: string }> {
   const client = getSupabaseClient();
@@ -450,7 +568,30 @@ export async function pullFromSupabaseToIndexedDB(): Promise<{ success: boolean;
   }
 
   try {
-    // 1. Fetch all 6 tables simultaneously in parallel
+    // 1. Gather all deleted IDs from sync_queue AND tombstones to prevent ghost reappearance
+    const queueItems = await getAllFromStore<SyncQueueItem>('sync_queue').catch(() => []);
+    const queueDeletes = queueItems.filter(q => q.action === 'DELETE' || q.sync_action === 'DELETE');
+
+    const deletedItemIds = getDeletedTombstoneIds('items');
+    const deletedPartyIds = getDeletedTombstoneIds('parties');
+    const deletedInvoiceIds = getDeletedTombstoneIds('invoices');
+    const deletedPurchaseIds = getDeletedTombstoneIds('purchases');
+    const deletedExpenseIds = getDeletedTombstoneIds('expenses');
+    const deletedPaymentIds = getDeletedTombstoneIds('payments');
+
+    for (const dq of queueDeletes) {
+      const targetId = dq.payload?.id || dq.payload?.itemId || dq.payload?.partyId || dq.id.replace(/^sync-del-(inv|itm|pty|exp|pay|items|parties|invoices|purchases|expenses|payments)-/, '');
+      if (!targetId) continue;
+      const table = mapEntityToTable(dq.entity);
+      if (table === 'items') deletedItemIds.add(targetId);
+      else if (table === 'parties') deletedPartyIds.add(targetId);
+      else if (table === 'invoices') deletedInvoiceIds.add(targetId);
+      else if (table === 'purchases') { deletedPurchaseIds.add(targetId); deletedInvoiceIds.add(targetId); }
+      else if (table === 'expenses') deletedExpenseIds.add(targetId);
+      else if (table === 'payments') deletedPaymentIds.add(targetId);
+    }
+
+    // 2. Fetch all 6 tables simultaneously in parallel
     const [remItems, remParties, remInvoices, remPurchases, remExpenses, remPayments] = await Promise.all([
       client.from('items').select('*'),
       client.from('parties').select('*'),
@@ -460,26 +601,173 @@ export async function pullFromSupabaseToIndexedDB(): Promise<{ success: boolean;
       client.from('payments').select('*'),
     ]);
 
-    // 2. Extract JSON payloads
-    const itemsToSave = (remItems.data || []).map(r => r.data_json).filter(Boolean);
-    const partiesToSave = (remParties.data || []).map(r => r.data_json).filter(Boolean);
-    const invoicesToSave = [
+    // 3. Extract JSON payloads and STRICTLY filter out any recently deleted records
+    const rawItems: Item[] = (remItems.data || []).map(r => r.data_json).filter(Boolean);
+    const rawParties: Party[] = (remParties.data || []).map(r => r.data_json).filter(Boolean);
+    const rawInvoices: Invoice[] = [
       ...(remInvoices.data || []).map(r => r.data_json).filter(Boolean),
       ...(remPurchases.data || []).map(r => r.data_json).filter(Boolean),
     ];
-    const expensesToSave = (remExpenses.data || []).map(r => r.data_json).filter(Boolean);
-    const paymentsToSave = (remPayments.data || []).map(r => r.data_json).filter(Boolean);
+    const rawExpenses: Expense[] = (remExpenses.data || []).map(r => r.data_json).filter(Boolean);
+    const rawPayments: PaymentTransaction[] = (remPayments.data || []).map(r => r.data_json).filter(Boolean);
 
-    // 3. Batch write into IndexedDB in parallel
-    await Promise.all([
-      itemsToSave.length > 0 ? bulkPutToStore('items', itemsToSave) : Promise.resolve(),
-      partiesToSave.length > 0 ? bulkPutToStore('parties', partiesToSave) : Promise.resolve(),
-      invoicesToSave.length > 0 ? bulkPutToStore('invoices', invoicesToSave) : Promise.resolve(),
-      expensesToSave.length > 0 ? bulkPutToStore('expenses', expensesToSave) : Promise.resolve(),
-      paymentsToSave.length > 0 ? bulkPutToStore('payments', paymentsToSave) : Promise.resolve(),
-    ]);
+    // Active Cloud Cleanup: If Supabase returned a record that was deleted locally, clean it up from Supabase immediately!
+    for (const r of (remItems.data || [])) {
+      if (deletedItemIds.has(r.id)) {
+        Promise.resolve(client.from('items').delete().eq('id', r.id)).catch(() => {});
+      }
+    }
+    for (const r of (remParties.data || [])) {
+      if (deletedPartyIds.has(r.id)) {
+        Promise.resolve(client.from('parties').delete().eq('id', r.id)).catch(() => {});
+      }
+    }
+    for (const r of (remInvoices.data || [])) {
+      if (deletedInvoiceIds.has(r.id)) {
+        Promise.resolve(client.from('invoices').delete().eq('id', r.id)).catch(() => {});
+      }
+    }
+    for (const r of (remPurchases.data || [])) {
+      if (deletedPurchaseIds.has(r.id) || deletedInvoiceIds.has(r.id)) {
+        Promise.resolve(client.from('purchases').delete().eq('id', r.id)).catch(() => {});
+      }
+    }
+    for (const r of (remExpenses.data || [])) {
+      if (deletedExpenseIds.has(r.id)) {
+        Promise.resolve(client.from('expenses').delete().eq('id', r.id)).catch(() => {});
+      }
+    }
+    for (const r of (remPayments.data || [])) {
+      if (deletedPaymentIds.has(r.id)) {
+        Promise.resolve(client.from('payments').delete().eq('id', r.id)).catch(() => {});
+      }
+    }
 
-    const totalPulled = itemsToSave.length + partiesToSave.length + invoicesToSave.length + expensesToSave.length + paymentsToSave.length;
+    // Filter to only genuinely non-deleted records
+    const safeItems = rawItems.filter(i => i && i.id && !deletedItemIds.has(i.id));
+    const safeParties = rawParties.filter(p => p && p.id && !deletedPartyIds.has(p.id));
+    const safeInvoices = rawInvoices.filter(inv => inv && inv.id && !deletedInvoiceIds.has(inv.id));
+    const safeExpenses = rawExpenses.filter(e => e && e.id && !deletedExpenseIds.has(e.id));
+    const safePayments = rawPayments.filter(p => p && p.id && !deletedPaymentIds.has(p.id));
+
+    // 4. Safe Reconciliation with IndexedDB:
+    // Only genuinely active records stay in IndexedDB.
+    // - Remove local records that are in deleted lists or tombstones.
+    // - Remove local records that were previously synced (is_synced !== false) but no longer exist on cloud (deleted remotely).
+    // - Rule 3: DO NOT overwrite local records that have 'is_synced === false' or 'isSynced === false'.
+
+    if (!remItems.error) {
+      const localItems = await getAllFromStore<Item>('items').catch(() => []);
+      const unsyncedItemIds = new Set(
+        localItems
+          .filter(loc => (loc as any).is_synced === false || (loc as any).isSynced === false)
+          .map(loc => loc.id)
+      );
+      const remoteItemIds = new Set(safeItems.map(i => i.id));
+      for (const loc of localItems) {
+        if (deletedItemIds.has(loc.id)) {
+          await deleteFromStore('items', loc.id).catch(() => {});
+        } else if (!remoteItemIds.has(loc.id) && !unsyncedItemIds.has(loc.id)) {
+          // Record was deleted on cloud/another device! Remove from local DB
+          await deleteFromStore('items', loc.id).catch(() => {});
+        }
+      }
+      // Rule 3: Conflict Prevention - Do NOT overwrite local items that have is_synced === false
+      const itemsToWrite = safeItems.filter(i => !unsyncedItemIds.has(i.id));
+      if (itemsToWrite.length > 0) {
+        await bulkPutToStore('items', itemsToWrite.map(i => ({ ...i, is_synced: true, isSynced: true })));
+      }
+    }
+
+    if (!remParties.error) {
+      const localParties = await getAllFromStore<Party>('parties').catch(() => []);
+      const unsyncedPartyIds = new Set(
+        localParties
+          .filter(loc => (loc as any).is_synced === false || (loc as any).isSynced === false)
+          .map(loc => loc.id)
+      );
+      const remotePartyIds = new Set(safeParties.map(p => p.id));
+      for (const loc of localParties) {
+        if (deletedPartyIds.has(loc.id)) {
+          await deleteFromStore('parties', loc.id).catch(() => {});
+        } else if (!remotePartyIds.has(loc.id) && !unsyncedPartyIds.has(loc.id)) {
+          await deleteFromStore('parties', loc.id).catch(() => {});
+        }
+      }
+      // Rule 3: Conflict Prevention - Do NOT overwrite local parties that have is_synced === false
+      const partiesToWrite = safeParties.filter(p => !unsyncedPartyIds.has(p.id));
+      if (partiesToWrite.length > 0) {
+        await bulkPutToStore('parties', partiesToWrite.map(p => ({ ...p, is_synced: true, isSynced: true })));
+      }
+    }
+
+    if (!remInvoices.error && !remPurchases.error) {
+      const localInvoices = await getAllFromStore<Invoice>('invoices').catch(() => []);
+      const unsyncedInvoiceIds = new Set(
+        localInvoices
+          .filter(loc => (loc as any).is_synced === false || (loc as any).isSynced === false)
+          .map(loc => loc.id)
+      );
+      const remoteInvoiceIds = new Set(safeInvoices.map(inv => inv.id));
+      for (const loc of localInvoices) {
+        if (deletedInvoiceIds.has(loc.id)) {
+          await deleteFromStore('invoices', loc.id).catch(() => {});
+        } else if (!remoteInvoiceIds.has(loc.id) && !unsyncedInvoiceIds.has(loc.id)) {
+          await deleteFromStore('invoices', loc.id).catch(() => {});
+        }
+      }
+      // Rule 3: Conflict Prevention - Do NOT overwrite local invoices that have is_synced === false
+      const invoicesToWrite = safeInvoices.filter(inv => !unsyncedInvoiceIds.has(inv.id));
+      if (invoicesToWrite.length > 0) {
+        await bulkPutToStore('invoices', invoicesToWrite.map(inv => ({ ...inv, is_synced: true, isSynced: true })));
+      }
+    }
+
+    if (!remExpenses.error) {
+      const localExpenses = await getAllFromStore<Expense>('expenses').catch(() => []);
+      const unsyncedExpenseIds = new Set(
+        localExpenses
+          .filter(loc => (loc as any).is_synced === false || (loc as any).isSynced === false)
+          .map(loc => loc.id)
+      );
+      const remoteExpenseIds = new Set(safeExpenses.map(e => e.id));
+      for (const loc of localExpenses) {
+        if (deletedExpenseIds.has(loc.id)) {
+          await deleteFromStore('expenses', loc.id).catch(() => {});
+        } else if (!remoteExpenseIds.has(loc.id) && !unsyncedExpenseIds.has(loc.id)) {
+          await deleteFromStore('expenses', loc.id).catch(() => {});
+        }
+      }
+      // Rule 3: Conflict Prevention - Do NOT overwrite local expenses that have is_synced === false
+      const expensesToWrite = safeExpenses.filter(e => !unsyncedExpenseIds.has(e.id));
+      if (expensesToWrite.length > 0) {
+        await bulkPutToStore('expenses', expensesToWrite.map(e => ({ ...e, is_synced: true, isSynced: true })));
+      }
+    }
+
+    if (!remPayments.error) {
+      const localPayments = await getAllFromStore<PaymentTransaction>('payments').catch(() => []);
+      const unsyncedPaymentIds = new Set(
+        localPayments
+          .filter(loc => (loc as any).is_synced === false || (loc as any).isSynced === false)
+          .map(loc => loc.id)
+      );
+      const remotePaymentIds = new Set(safePayments.map(p => p.id));
+      for (const loc of localPayments) {
+        if (deletedPaymentIds.has(loc.id)) {
+          await deleteFromStore('payments', loc.id).catch(() => {});
+        } else if (!remotePaymentIds.has(loc.id) && !unsyncedPaymentIds.has(loc.id)) {
+          await deleteFromStore('payments', loc.id).catch(() => {});
+        }
+      }
+      // Rule 3: Conflict Prevention - Do NOT overwrite local payments that have is_synced === false
+      const paymentsToWrite = safePayments.filter(p => !unsyncedPaymentIds.has(p.id));
+      if (paymentsToWrite.length > 0) {
+        await bulkPutToStore('payments', paymentsToWrite.map(p => ({ ...p, is_synced: true, isSynced: true })));
+      }
+    }
+
+    const totalPulled = safeItems.length + safeParties.length + safeInvoices.length + safeExpenses.length + safePayments.length;
     return { success: true, pulledCount: totalPulled };
   } catch (err: any) {
     console.error('Supabase batch pull error:', err);
@@ -488,7 +776,9 @@ export async function pullFromSupabaseToIndexedDB(): Promise<{ success: boolean;
 }
 
 /**
- * Executes complete two-way synchronization: pushes local pending records, then pulls cloud records
+ * Executes complete two-way synchronization:
+ * CRITICAL: Pushes local pending records and DELETES FIRST to avoid race condition resurrection,
+ * then pulls the freshly reconciled cloud records.
  */
 export async function performFullTwoWaySync(): Promise<{
   success: boolean;
@@ -496,14 +786,14 @@ export async function performFullTwoWaySync(): Promise<{
   pulledCount: number;
   error?: string;
 }> {
-  // Push pending delta records and pull remote records in parallel via Promise.all
-  const [pushRes, pullRes] = await Promise.all([
-    pushPendingToSupabase(),
-    pullFromSupabaseToIndexedDB(),
-  ]);
+  // 1. Push all pending local changes & deletes to cloud first
+  const pushRes = await pushPendingToSupabase();
+  
+  // 2. Pull the latest cloud records into local IndexedDB
+  const pullRes = await pullFromSupabaseToIndexedDB();
 
   return {
-    success: pushRes.success || pullRes.success,
+    success: (pushRes.success || pullRes.success),
     pushedCount: pushRes.pushedCount,
     pulledCount: pullRes.pulledCount,
     error: pushRes.error || pullRes.error,
@@ -542,23 +832,78 @@ export function initAutoSyncOnNetworkChange(onSyncComplete?: (res: any) => void)
 }
 
 /**
- * Direct mutation sync for immediate push to Supabase (Requirement 2)
+ * Direct mutation sync for immediate push to Supabase (Requirement 1 & 2)
  */
 export async function syncMutation(
   table: 'items' | 'parties' | 'invoices' | 'purchases' | 'expenses' | 'payments',
   data: any,
   action: 'UPSERT' | 'DELETE' = 'UPSERT'
 ): Promise<boolean> {
+  const targetId = typeof data === 'object' ? (data?.id || data?.itemId || data?.partyId) : data;
+
+  if (action === 'DELETE') {
+    if (!targetId) return false;
+
+    // 1. Record tombstone immediately to prevent any pull from resurrecting this record
+    recordDeletedTombstone(table, targetId);
+
+    // Also remove from local IndexedDB if still present
+    try {
+      await deleteFromStore(table === 'purchases' ? 'invoices' : table, targetId);
+    } catch {}
+
+    const client = getSupabaseClient();
+    const isOnline = typeof navigator !== 'undefined' ? navigator.onLine : true;
+
+    if (client && isOnline) {
+      try {
+        const { error } = await client.from(table).delete().eq('id', targetId);
+        if (!error) {
+          // Successfully deleted from Supabase cloud!
+          await deleteFromStore('sync_queue', `sync-del-${table}-${targetId}`).catch(() => {});
+          await deleteFromStore('sync_queue', `sync-del-itm-${targetId}`).catch(() => {});
+          await deleteFromStore('sync_queue', `sync-del-pty-${targetId}`).catch(() => {});
+          await deleteFromStore('sync_queue', `sync-del-inv-${targetId}`).catch(() => {});
+          return true;
+        } else {
+          console.warn(`Direct Supabase delete error on ${table}:`, error);
+        }
+      } catch (err) {
+        console.warn(`Direct delete failed for ${table}:`, err);
+      }
+    }
+
+    // 2. If offline or delete request failed, register into sync_queue (Requirement 1)
+    const entity = table === 'items' ? 'ITEMS'
+                 : table === 'parties' ? 'PARTIES'
+                 : table === 'purchases' ? 'PURCHASES'
+                 : table === 'expenses' ? 'EXPENSES'
+                 : table === 'payments' ? 'PAYMENTS'
+                 : 'INVOICES';
+
+    try {
+      await putToStore('sync_queue', {
+        id: `sync-del-${table}-${targetId}`,
+        entity,
+        action: 'DELETE',
+        payload: { id: targetId },
+        timestamp: Date.now(),
+        attempts: 0,
+        is_synced: false,
+        sync_action: 'DELETE',
+      });
+    } catch (qErr) {
+      console.warn('Failed to enqueue delete into sync_queue:', qErr);
+    }
+    return false;
+  }
+
   const client = getSupabaseClient();
   if (!client || (typeof navigator !== 'undefined' && !navigator.onLine)) {
     return false;
   }
 
   try {
-    if (action === 'DELETE') {
-      await client.from(table).delete().eq('id', data.id || data);
-      return true;
-    }
 
     let row: any = null;
     if (table === 'items') {

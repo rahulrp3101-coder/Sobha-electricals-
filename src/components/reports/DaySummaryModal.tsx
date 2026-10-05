@@ -25,8 +25,6 @@ export const DaySummaryModal: React.FC<DaySummaryModalProps> = ({
   items,
   company,
 }) => {
-  if (!isOpen) return null;
-
   const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
   const todayFormatted = useMemo(() => {
     return new Date().toLocaleDateString('hi-IN', {
@@ -125,6 +123,8 @@ export const DaySummaryModal: React.FC<DaySummaryModalProps> = ({
   const handlePrint = () => {
     window.print();
   };
+
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-2xs p-3 sm:p-4 overflow-y-auto">

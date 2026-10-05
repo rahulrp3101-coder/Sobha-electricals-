@@ -231,15 +231,24 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
     const isEstimate = invoice.documentType === 'QUOTATION' || invoice.documentType === 'ESTIMATE';
     const shouldDeductStock = isSales || isDebitNote || (isEstimate && Boolean(invoice.deductStock));
 
+    // Rule 2: Consolidate line items by itemId to prevent duplicate item race conditions
+    const itemQuantityMap = new Map<string, number>();
     for (const line of invoice.items) {
-      const itemReq = itemStore.get(line.itemId);
+      if (!line.itemId) continue;
+      const currentTotal = itemQuantityMap.get(line.itemId) || 0;
+      itemQuantityMap.set(line.itemId, currentTotal + (Number(line.quantity) || 0));
+    }
+
+    for (const [itemId, totalQty] of itemQuantityMap.entries()) {
+      const itemReq = itemStore.get(itemId);
       itemReq.onsuccess = () => {
         const item = itemReq.result as Item;
         if (item) {
           if (shouldDeductStock) {
-            item.currentStock = Math.max(0, item.currentStock - line.quantity);
+            // Rule 1: Allow negative stock by direct mathematical subtraction (no Math.max)
+            item.currentStock -= totalQty;
           } else if (isPurchase || isCreditNote) {
-            item.currentStock += line.quantity;
+            item.currentStock += totalQty;
           }
           item.updatedAt = new Date().toISOString();
           (item as any).is_synced = false;
@@ -261,7 +270,8 @@ export async function createInvoiceTransaction(invoice: Invoice, isOnline: boole
           } else if (isPurchase && invoice.balanceAmount > 0) {
             party.currentBalance -= invoice.balanceAmount;
           } else if (isCreditNote) {
-            party.currentBalance = Math.max(0, party.currentBalance - invoice.grandTotal);
+            // Rule 3: Allow negative balance (advance payment/credit protection, no Math.max)
+            party.currentBalance -= invoice.grandTotal;
           } else if (isDebitNote) {
             party.currentBalance += invoice.grandTotal;
           }
@@ -320,16 +330,18 @@ export async function updateInvoiceTransaction(
     const partyStore = tx.objectStore('parties');
     const queueStore = tx.objectStore('sync_queue');
 
-    const isOldSales = oldInvoice.documentType === 'SALES_INVOICE' || oldInvoice.documentType === 'DELIVERY_CHALLAN';
-    const isNewSales = updatedInvoice.documentType === 'SALES_INVOICE' || updatedInvoice.documentType === 'DELIVERY_CHALLAN';
+    const isOldSales = oldInvoice.documentType === 'SALES_INVOICE' || oldInvoice.documentType === 'DELIVERY_CHALLAN' || !oldInvoice.documentType;
+    const isNewSales = updatedInvoice.documentType === 'SALES_INVOICE' || updatedInvoice.documentType === 'DELIVERY_CHALLAN' || !updatedInvoice.documentType;
     const isOldPurchase = oldInvoice.documentType === 'PURCHASE_BILL';
     const isNewPurchase = updatedInvoice.documentType === 'PURCHASE_BILL';
     const isOldCreditNote = oldInvoice.documentType === 'CREDIT_NOTE';
     const isNewCreditNote = updatedInvoice.documentType === 'CREDIT_NOTE';
     const isOldDebitNote = oldInvoice.documentType === 'DEBIT_NOTE';
     const isNewDebitNote = updatedInvoice.documentType === 'DEBIT_NOTE';
+    const isOldEstimateDeduct = (oldInvoice.documentType === 'ESTIMATE' || oldInvoice.documentType === 'QUOTATION') && Boolean(oldInvoice.deductStock);
+    const isNewEstimateDeduct = (updatedInvoice.documentType === 'ESTIMATE' || updatedInvoice.documentType === 'QUOTATION') && Boolean(updatedInvoice.deductStock);
 
-    // 1. Calculate stock deltas for items:
+    // 1. Calculate stock deltas for items (Rule 4: Handle PURCHASE_BILL and sales bill editing):
     // For purchase bill: old added stock (+), so rollback is (-oldQty); new adds stock (+newQty).
     // For sales invoice: old deducted stock (-), so rollback is (+oldQty); new deducts stock (-newQty).
     const stockDeltas = new Map<string, number>();
@@ -337,10 +349,12 @@ export async function updateInvoiceTransaction(
     // Rollback old invoice items
     if (oldInvoice.items && Array.isArray(oldInvoice.items)) {
       for (const line of oldInvoice.items) {
+        if (!line.itemId) continue;
+        const qty = Number(line.quantity) || 0;
         if (isOldPurchase || isOldCreditNote) {
-          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) - line.quantity);
-        } else if (isOldSales || isOldDebitNote) {
-          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) + line.quantity);
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) - qty);
+        } else if (isOldSales || isOldDebitNote || isOldEstimateDeduct) {
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) + qty);
         }
       }
     }
@@ -348,26 +362,25 @@ export async function updateInvoiceTransaction(
     // Apply new invoice items
     if (updatedInvoice.items && Array.isArray(updatedInvoice.items)) {
       for (const line of updatedInvoice.items) {
+        if (!line.itemId) continue;
+        const qty = Number(line.quantity) || 0;
         if (isNewPurchase || isNewCreditNote) {
-          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) + line.quantity);
-        } else if (isNewSales || isNewDebitNote) {
-          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) - line.quantity);
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) + qty);
+        } else if (isNewSales || isNewDebitNote || isNewEstimateDeduct) {
+          stockDeltas.set(line.itemId, (stockDeltas.get(line.itemId) || 0) - qty);
         }
       }
     }
 
-    // Apply stock deltas to itemStore
+    // Apply stock deltas to itemStore (Rule 1: Direct addition/subtraction allowing negative stock)
     for (const [itemId, delta] of stockDeltas.entries()) {
       if (delta === 0) continue;
       const itemReq = itemStore.get(itemId);
       itemReq.onsuccess = () => {
         const item = itemReq.result as Item;
         if (item) {
-          if (delta > 0) {
-            item.currentStock += delta;
-          } else {
-            item.currentStock = Math.max(0, item.currentStock + delta);
-          }
+          // Rule 1: Allow negative stock by direct mathematical addition/subtraction (no Math.max)
+          item.currentStock += delta;
           item.updatedAt = new Date().toISOString();
           (item as any).is_synced = false;
           (item as any).isSynced = false;
@@ -485,6 +498,60 @@ export async function updateInvoiceTransaction(
             const party = pReq.result as Party;
             if (party) {
               party.currentBalance += deltaBal;
+              party.updatedAt = new Date().toISOString();
+              (party as any).is_synced = false;
+              (party as any).isSynced = false;
+              (party as any).sync_action = 'UPDATE';
+              partyStore.put(party);
+
+              queueStore.put({
+                id: 'sync-party-' + party.id + '-' + Date.now(),
+                entity: 'PARTY',
+                action: 'UPDATE',
+                payload: party,
+                timestamp: Date.now(),
+                attempts: 0,
+                is_synced: false,
+                sync_action: 'UPDATE',
+              });
+            }
+          };
+        }
+      } else {
+        // Rule 4: Party changed on sales invoice:
+        // Subtract old balance from old party (party.currentBalance -= oldBal)
+        // Add new balance to new party (party.currentBalance += newBal)
+        if (oldPartyId && oldBal > 0) {
+          const oldPReq = partyStore.get(oldPartyId);
+          oldPReq.onsuccess = () => {
+            const party = oldPReq.result as Party;
+            if (party) {
+              party.currentBalance -= oldBal; // Rule 3: No Math.max(0, ...) so advance balance is preserved!
+              party.updatedAt = new Date().toISOString();
+              (party as any).is_synced = false;
+              (party as any).isSynced = false;
+              (party as any).sync_action = 'UPDATE';
+              partyStore.put(party);
+
+              queueStore.put({
+                id: 'sync-party-' + party.id + '-' + Date.now(),
+                entity: 'PARTY',
+                action: 'UPDATE',
+                payload: party,
+                timestamp: Date.now(),
+                attempts: 0,
+                is_synced: false,
+                sync_action: 'UPDATE',
+              });
+            }
+          };
+        }
+        if (newPartyId && newBal > 0) {
+          const newPReq = partyStore.get(newPartyId);
+          newPReq.onsuccess = () => {
+            const party = newPReq.result as Party;
+            if (party) {
+              party.currentBalance += newBal;
               party.updatedAt = new Date().toISOString();
               (party as any).is_synced = false;
               (party as any).isSynced = false;
@@ -758,19 +825,25 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
       const isEstimate = invoice.documentType === 'QUOTATION' || invoice.documentType === 'ESTIMATE';
       const wasStockDeducted = isSales || isDebitNote || (isEstimate && Boolean(invoice.deductStock));
 
-      // 1. Rollback Stock
+      // 1. Rollback Stock (Consolidated by itemId to handle duplicate items safely - Rule 2)
       if (invoice.items && Array.isArray(invoice.items)) {
+        const itemQtyMap = new Map<string, number>();
         for (const line of invoice.items) {
-          const itemReq = itemStore.get(line.itemId);
+          if (!line.itemId) continue;
+          itemQtyMap.set(line.itemId, (itemQtyMap.get(line.itemId) || 0) + (Number(line.quantity) || 0));
+        }
+
+        for (const [itemId, totalQty] of itemQtyMap.entries()) {
+          const itemReq = itemStore.get(itemId);
           itemReq.onsuccess = () => {
             const item = itemReq.result as Item;
             if (item) {
               if (wasStockDeducted) {
                 // Stock was decremented, so increment it back
-                item.currentStock += line.quantity;
+                item.currentStock += totalQty;
               } else if (isPurchase || isCreditNote) {
-                // Stock was incremented on purchase, so decrement it back
-                item.currentStock = Math.max(0, item.currentStock - line.quantity);
+                // Stock was incremented on purchase, so decrement it back (Rule 1: Direct subtraction, allow negative stock)
+                item.currentStock -= totalQty;
               }
               item.updatedAt = new Date().toISOString();
               (item as any).is_synced = false;
@@ -793,22 +866,22 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
         }
       }
 
-      // 2. Rollback Party Khata Balance
+      // 2. Rollback Party Khata Balance (Rule 3: No Math.max to preserve customer advance/negative balance)
       if (invoice.partyId) {
         const partyReq = partyStore.get(invoice.partyId);
         partyReq.onsuccess = () => {
           const party = partyReq.result as Party;
           if (party) {
             if (isSales && invoice.balanceAmount > 0) {
-              // Unpaid balance was added to customer, so subtract it back
-              party.currentBalance = Math.max(0, party.currentBalance - invoice.balanceAmount);
+              // Unpaid balance was added to customer, so subtract it back (preserve negative advance balance)
+              party.currentBalance -= invoice.balanceAmount;
             } else if (isPurchase && invoice.balanceAmount > 0) {
               // Unpaid purchase balance was deducted from supplier, so add it back
               party.currentBalance += invoice.balanceAmount;
             } else if (isCreditNote) {
               party.currentBalance += invoice.grandTotal;
             } else if (isDebitNote) {
-              party.currentBalance = Math.max(0, party.currentBalance - invoice.grandTotal);
+              party.currentBalance -= invoice.grandTotal;
             }
             party.updatedAt = new Date().toISOString();
             (party as any).is_synced = false;
@@ -833,10 +906,10 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
       // 3. Delete invoice from store
       invStore.delete(invoiceId);
 
-      // 4. Register delete in sync_queue
+      // 4. Register delete in sync_queue (Requirement 1)
       queueStore.put({
         id: 'sync-del-inv-' + invoiceId,
-        entity: isPurchase ? 'PURCHASE' : 'INVOICE',
+        entity: isPurchase ? 'PURCHASES' : 'INVOICES',
         action: 'DELETE',
         payload: { id: invoiceId },
         timestamp: Date.now(),
@@ -846,9 +919,10 @@ export async function deleteInvoiceTransaction(invoiceId: string): Promise<{ suc
       });
 
       tx.oncomplete = () => {
-        // Direct mutation sync to Supabase
+        // Direct mutation sync to Supabase & tombstone
         import('../services/supabaseService')
-          .then(({ syncMutation, pushPendingToSupabase }) => {
+          .then(({ syncMutation, recordDeletedTombstone, pushPendingToSupabase }) => {
+            if (recordDeletedTombstone) recordDeletedTombstone(isPurchase ? 'purchases' : 'invoices', invoiceId);
             syncMutation(isPurchase ? 'purchases' : 'invoices', { id: invoiceId }, 'DELETE').catch(() => {});
             pushPendingToSupabase().catch(() => {});
           })
@@ -875,7 +949,7 @@ export async function deleteItemTransaction(itemId: string): Promise<boolean> {
 
     queueStore.put({
       id: 'sync-del-itm-' + itemId,
-      entity: 'ITEM',
+      entity: 'ITEMS',
       action: 'DELETE',
       payload: { id: itemId },
       timestamp: Date.now(),
@@ -886,7 +960,8 @@ export async function deleteItemTransaction(itemId: string): Promise<boolean> {
 
     tx.oncomplete = () => {
       import('../services/supabaseService')
-        .then(({ syncMutation }) => {
+        .then(({ syncMutation, recordDeletedTombstone }) => {
+          if (recordDeletedTombstone) recordDeletedTombstone('items', itemId);
           syncMutation('items', { id: itemId }, 'DELETE').catch(() => {});
         })
         .catch(() => {});
@@ -911,7 +986,7 @@ export async function deletePartyTransaction(partyId: string): Promise<boolean> 
 
     queueStore.put({
       id: 'sync-del-pty-' + partyId,
-      entity: 'PARTY',
+      entity: 'PARTIES',
       action: 'DELETE',
       payload: { id: partyId },
       timestamp: Date.now(),
@@ -922,7 +997,8 @@ export async function deletePartyTransaction(partyId: string): Promise<boolean> 
 
     tx.oncomplete = () => {
       import('../services/supabaseService')
-        .then(({ syncMutation }) => {
+        .then(({ syncMutation, recordDeletedTombstone }) => {
+          if (recordDeletedTombstone) recordDeletedTombstone('parties', partyId);
           syncMutation('parties', { id: partyId }, 'DELETE').catch(() => {});
         })
         .catch(() => {});
