@@ -125,7 +125,7 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
 
   if (!isOpen) return null;
 
-  // Compress image if needed using HTML5 Canvas to keep transfer fast & reliable
+  // Compress image before upload using HTML5 Canvas (< 1MB, max dimension 1280px, JPEG quality 0.75)
   const fileToBase64 = (file: File): Promise<{ base64: string; mimeType: string }> => {
     return new Promise((resolve, reject) => {
       if (file.type === 'application/pdf') {
@@ -144,33 +144,53 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
       reader.onload = (e) => {
         img.src = e.target?.result as string;
       };
+      reader.onerror = err => reject(err);
+
       img.onload = () => {
-        const canvas = document.createElement('canvas');
-        let width = img.width;
-        let height = img.height;
-        const maxDimension = 2000;
+        try {
+          const canvas = document.createElement('canvas');
+          let width = img.width;
+          let height = img.height;
+          // Requirement 1: Compress image before upload (max width 1280px and JPEG quality 0.75 to ensure base64 < 1MB)
+          const maxDimension = 1280;
 
-        if (width > maxDimension || height > maxDimension) {
-          if (width > height) {
-            height = Math.round((height * maxDimension) / width);
-            width = maxDimension;
-          } else {
-            width = Math.round((width * maxDimension) / height);
-            height = maxDimension;
+          if (width > maxDimension || height > maxDimension) {
+            if (width > height) {
+              height = Math.round((height * maxDimension) / width);
+              width = maxDimension;
+            } else {
+              width = Math.round((width * maxDimension) / height);
+              height = maxDimension;
+            }
           }
-        }
 
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', 0.88);
-          resolve({ base64: dataUrl, mimeType: 'image/jpeg' });
-        } else {
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            // Fill crisp white background so transparent PNGs don't darken
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillRect(0, 0, width, height);
+            ctx.drawImage(img, 0, 0, width, height);
+
+            // Compress to JPEG with 0.75 quality (between 0.7 and 0.8)
+            let dataUrl = canvas.toDataURL('image/jpeg', 0.75);
+
+            // If still larger than 1MB (base64 string length > ~1,300,000 chars), further optimize
+            if (dataUrl.length > 1300000) {
+              dataUrl = canvas.toDataURL('image/jpeg', 0.65);
+            }
+
+            resolve({ base64: dataUrl, mimeType: 'image/jpeg' });
+          } else {
+            resolve({ base64: reader.result as string, mimeType: file.type });
+          }
+        } catch (canvasErr) {
+          console.warn('Canvas compression failed, falling back to original file:', canvasErr);
           resolve({ base64: reader.result as string, mimeType: file.type });
         }
       };
+
       img.onerror = () => {
         // Fallback to direct read
         const directReader = new FileReader();
@@ -178,6 +198,7 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
         directReader.onerror = err => reject(err);
         directReader.readAsDataURL(file);
       };
+
       reader.readAsDataURL(file);
     });
   };
@@ -218,26 +239,58 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
         }),
       });
 
-      let json: any;
+      // Requirement 2: Safe Fetch Response Handling
+      const responseText = await response.text();
+
+      if (!response.ok) {
+        let errDesc = responseText || 'खाली रिस्पॉन्स';
+        try {
+          const parsedErr = JSON.parse(responseText);
+          if (parsedErr.error || parsedErr.message) {
+            errDesc = parsedErr.error || parsedErr.message;
+          }
+        } catch {
+          // not json
+        }
+
+        if (response.status === 413 || /payload too large/i.test(errDesc)) {
+          throw new Error('सर्वर कनेक्ट नहीं हो सका या फोटो बहुत बड़ी है।');
+        } else if (/GEMINI_API_KEY|api key/i.test(errDesc)) {
+          throw new Error('Gemini API Key उपलब्ध नहीं है। कृपया सेटिंग्स में API Key जांचें।');
+        } else if (response.status >= 500) {
+          throw new Error(`सर्वर कनेक्ट नहीं हो सका (Error ${response.status})। कृपया थोड़ी देर बाद पुनः प्रयास करें या API Key चेक करें।`);
+        } else {
+          throw new Error(`सर्वर एरर (${response.status}): ${errDesc}`);
+        }
+      }
+
+      if (!responseText || responseText.trim().length === 0) {
+        throw new Error("सर्वर से कोई डेटा प्राप्त नहीं हुआ (खाली रिस्पॉन्स)। कृपया API Key और नेटवर्क चेक करें।");
+      }
+
+      let data: any;
       try {
-        const textRes = await response.text();
-        const clean = textRes.replace(/```json/gi, '').replace(/```/g, '').trim();
+        const clean = responseText.replace(/```json/gi, '').replace(/```/g, '').trim();
         const start = clean.indexOf('{');
         const end = clean.lastIndexOf('}');
-        json = JSON.parse(start !== -1 && end !== -1 ? clean.slice(start, end + 1) : clean);
-      } catch (parseErr) {
-        throw new Error('बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।');
+        const jsonStr = start !== -1 && end !== -1 ? clean.slice(start, end + 1) : clean;
+        data = JSON.parse(jsonStr);
+      } catch (err) {
+        throw new Error("सर्वर से अमान्य रिस्पॉन्स मिला: " + responseText.slice(0, 100));
       }
 
-      if (!response.ok || !json.success) {
-        const errMessage = json.error || 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।';
-        if (/json|unexpected end|syntaxerror/i.test(errMessage)) {
+      if (!data || !data.success || !data.data) {
+        const errorMsg = data?.error || 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।';
+        if (/GEMINI_API_KEY|api key/i.test(errorMsg)) {
+          throw new Error('Gemini API Key उपलब्ध नहीं है। कृपया सेटिंग्स में API Key जांचें।');
+        }
+        if (/json|unexpected end|syntaxerror|अधूरा/i.test(errorMsg)) {
           throw new Error('बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।');
         }
-        throw new Error(errMessage);
+        throw new Error(errorMsg);
       }
 
-      const raw = json.data;
+      const raw = data.data;
       setStatusMessage('इन्वेंट्री के साथ स्मार्ट Fuzzy Matching व Aliases की जांच हो रही है...');
 
       // Smart Supplier Matching: Match by GSTIN or by similar name
@@ -332,10 +385,25 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
       showToast('बिल सफलतापूर्वक स्कैन हो गया! मैपिंग की समीक्षा करें।');
     } catch (err: any) {
       console.error('Scan error:', err);
-      const isJsonOrIncomplete = /json|unexpected end|syntaxerror|parse|अधूरा/i.test(err.message || '');
-      const userFriendlyMsg = isJsonOrIncomplete
-        ? 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।'
-        : (err.message || 'बिल स्कैन करने में समस्या आई, कृपया दोबारा प्रयास करें।');
+      const rawMsg = err?.message || '';
+      let userFriendlyMsg = rawMsg;
+
+      if (/Failed to fetch|NetworkError|net::ERR|ERR_CONNECTION|network/i.test(rawMsg)) {
+        userFriendlyMsg = 'सर्वर कनेक्ट नहीं हो सका। कृपया इंटरनेट कनेक्शन या नेटवर्क चेक करें।';
+      } else if (/413|payload too large|फोटो बहुत बड़ी/i.test(rawMsg)) {
+        userFriendlyMsg = 'सर्वर कनेक्ट नहीं हो सका या फोटो बहुत बड़ी है।';
+      } else if (/GEMINI_API_KEY|api key/i.test(rawMsg)) {
+        userFriendlyMsg = 'Gemini API Key उपलब्ध नहीं है। कृपया सेटिंग्स में API Key जांचें।';
+      } else if (/500|502|503|504|सर्वर एरर/i.test(rawMsg)) {
+        userFriendlyMsg = rawMsg.includes('सर्वर कनेक्ट') 
+          ? rawMsg 
+          : 'सर्वर कनेक्ट नहीं हो सका (Error 500)। कृपया थोड़ी देर बाद पुनः प्रयास करें या API Key चेक करें।';
+      } else if (/खाली रिस्पॉन्स/i.test(rawMsg)) {
+        userFriendlyMsg = 'सर्वर से कोई डेटा प्राप्त नहीं हुआ (खाली रिस्पॉन्स)। कृपया API Key और नेटवर्क चेक करें।';
+      } else if (/json|unexpected end|syntaxerror|अमान्य रिस्पॉन्स|अधूरा/i.test(rawMsg)) {
+        userFriendlyMsg = 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।';
+      }
+
       showToast(userFriendlyMsg, true);
     } finally {
       setIsScanning(false);

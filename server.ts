@@ -651,6 +651,24 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
   }
 });
 
+// Express error handler for body parser errors (e.g. 413 Payload Too Large)
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err) {
+    console.error('Express request error:', err);
+    if (err.type === 'entity.too.large' || err.status === 413) {
+      return res.status(413).json({
+        success: false,
+        error: 'सर्वर कनेक्ट नहीं हो सका या फोटो बहुत बड़ी है।',
+      });
+    }
+    return res.status(err.status || 500).json({
+      success: false,
+      error: err.message || 'सर्वर एरर',
+    });
+  }
+  next();
+});
+
 // Setup Vite middleware in dev or static files in production
 async function startServer() {
   await initAdminAuthTable();
