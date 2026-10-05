@@ -11,7 +11,8 @@ import {
 import { 
   getDB, getAllFromStore, putToStore, deleteFromStore, createInvoiceTransaction, 
   updateInvoiceTransaction, recordPaymentTransaction, saveItemTransaction, savePartyTransaction, saveExpenseTransaction,
-  deleteInvoiceTransaction, deleteItemTransaction, deletePartyTransaction, togglePartyBlacklistTransaction
+  deleteInvoiceTransaction, deleteItemTransaction, deletePartyTransaction, togglePartyBlacklistTransaction,
+  saveCompanyProfile, getSavedCompanyProfile
 } from './db/indexedDB';
 import { DEFAULT_COMPANY } from './db/defaultData';
 import { useOnlineStatus } from './hooks/useOnlineStatus';
@@ -44,7 +45,8 @@ import {
   pullFromSupabaseToIndexedDB, 
   performFullTwoWaySync,
   subscribeToRealtimeSync, 
-  getSupabaseConfig 
+  getSupabaseConfig,
+  syncShopSettingsToSupabase
 } from './services/supabaseService';
 import { CheckCircle2 } from 'lucide-react';
 import confetti from 'canvas-confetti';
@@ -72,7 +74,19 @@ export default function App() {
   const [selectedPartyIdForLedger, setSelectedPartyIdForLedger] = useState<string | null>(null);
 
   // Core Data Stores from IndexedDB
-  const [company, setCompany] = useState<CompanyProfile>(DEFAULT_COMPANY);
+  // Requirement 3: Load saved profile first, avoiding mock or demo data on app load/refresh
+  const [company, setCompany] = useState<CompanyProfile>(() => {
+    if (typeof window !== 'undefined') {
+      try {
+        const cached = localStorage.getItem('vyapar_company_profile');
+        if (cached) {
+          const parsed = JSON.parse(cached);
+          if (parsed && parsed.name) return parsed;
+        }
+      } catch {}
+    }
+    return DEFAULT_COMPANY;
+  });
   const [items, setItems] = useState<Item[]>([]);
   const [parties, setParties] = useState<Party[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -163,12 +177,12 @@ export default function App() {
     setSessionTerminatedReason(null);
   };
 
-  // Load Database Data on Mount & Two-Way Cloud Sync (Requirement 2)
+  // Load Database Data on Mount & Two-Way Cloud Sync (Requirement 2 & 3)
   const loadDatabaseData = useCallback(async () => {
     try {
       await getDB();
-      const [allComp, allItems, allParties, allInvoices, allPayments, allExpenses] = await Promise.all([
-        getAllFromStore<any>('company'),
+      const [savedComp, allItems, allParties, allInvoices, allPayments, allExpenses] = await Promise.all([
+        getSavedCompanyProfile(),
         getAllFromStore<Item>('items'),
         getAllFromStore<Party>('parties'),
         getAllFromStore<Invoice>('invoices'),
@@ -176,8 +190,8 @@ export default function App() {
         getAllFromStore<Expense>('expenses'),
       ]);
 
-      if (allComp.length > 0) {
-        setCompany(allComp[0]);
+      if (savedComp && savedComp.name) {
+        setCompany(savedComp);
       }
       setItems(allItems);
       setParties(allParties);
@@ -191,7 +205,11 @@ export default function App() {
       if (typeof navigator !== 'undefined' && navigator.onLine) {
         const cfg = getSupabaseConfig();
         if (cfg.isConnected) {
-          performFullTwoWaySync().then(res => {
+          performFullTwoWaySync().then(async res => {
+            const freshProfile = await getSavedCompanyProfile();
+            if (freshProfile && freshProfile.name) {
+              setCompany(freshProfile);
+            }
             if (res.pulledCount > 0 || res.pushedCount > 0) {
               // Reload in-memory state with freshly reconciled cloud invoices and parties
               Promise.all([
@@ -372,9 +390,14 @@ export default function App() {
     await loadDatabaseData();
   };
 
-  // Handle Update Shop Settings
+  // Handle Update Shop Settings (Requirement 2: Permanent Save to IndexedDB & Supabase)
   const handleSaveCompany = async (updatedCompany: CompanyProfile) => {
-    await putToStore('company', { id: 'primary', ...updatedCompany });
+    // 1. Save to IndexedDB stores ('settings', 'company', 'business_profile') & local cache
+    await saveCompanyProfile(updatedCompany);
+    // 2. Direct Supabase cloud upsert
+    await syncShopSettingsToSupabase(updatedCompany).catch(err => {
+      console.warn('Supabase cloud settings sync notice:', err);
+    });
     setCompany(updatedCompany);
   };
 

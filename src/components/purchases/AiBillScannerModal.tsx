@@ -218,9 +218,23 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
         }),
       });
 
-      const json = await response.json();
+      let json: any;
+      try {
+        const textRes = await response.text();
+        const clean = textRes.replace(/```json/gi, '').replace(/```/g, '').trim();
+        const start = clean.indexOf('{');
+        const end = clean.lastIndexOf('}');
+        json = JSON.parse(start !== -1 && end !== -1 ? clean.slice(start, end + 1) : clean);
+      } catch (parseErr) {
+        throw new Error('बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।');
+      }
+
       if (!response.ok || !json.success) {
-        throw new Error(json.error || 'Gemini Vision AI बिल को स्कैन नहीं कर सका।');
+        const errMessage = json.error || 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।';
+        if (/json|unexpected end|syntaxerror/i.test(errMessage)) {
+          throw new Error('बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।');
+        }
+        throw new Error(errMessage);
       }
 
       const raw = json.data;
@@ -318,7 +332,11 @@ export const AiBillScannerModal: React.FC<AiBillScannerModalProps> = ({
       showToast('बिल सफलतापूर्वक स्कैन हो गया! मैपिंग की समीक्षा करें।');
     } catch (err: any) {
       console.error('Scan error:', err);
-      showToast('स्कैन त्रुटि: ' + (err.message || 'त्रुटि हुई'), true);
+      const isJsonOrIncomplete = /json|unexpected end|syntaxerror|parse|अधूरा/i.test(err.message || '');
+      const userFriendlyMsg = isJsonOrIncomplete
+        ? 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।'
+        : (err.message || 'बिल स्कैन करने में समस्या आई, कृपया दोबारा प्रयास करें।');
+      showToast(userFriendlyMsg, true);
     } finally {
       setIsScanning(false);
       setStatusMessage('');

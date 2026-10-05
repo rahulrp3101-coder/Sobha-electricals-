@@ -185,6 +185,39 @@ CREATE TABLE IF NOT EXISTS payments (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 7. SETTINGS & BUSINESS PROFILES (Shop Details, State & GST, Bank, Address)
+CREATE TABLE IF NOT EXISTS settings (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  legal_name TEXT,
+  phone TEXT,
+  email TEXT,
+  gstin TEXT,
+  state TEXT,
+  state_code TEXT,
+  address TEXT,
+  city TEXT,
+  pincode TEXT,
+  bank_name TEXT,
+  bank_account_no TEXT,
+  bank_ifsc TEXT,
+  bank_branch TEXT,
+  upi_id TEXT,
+  data_json JSONB,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Compatibility alias table for profiles
+CREATE TABLE IF NOT EXISTS profiles (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  phone TEXT,
+  gstin TEXT,
+  state TEXT,
+  data_json JSONB,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Enable Row Level Security (RLS) & Public access for API Keys
 ALTER TABLE items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE parties ENABLE ROW LEVEL SECURITY;
@@ -192,6 +225,8 @@ ALTER TABLE invoices ENABLE ROW LEVEL SECURITY;
 ALTER TABLE purchases ENABLE ROW LEVEL SECURITY;
 ALTER TABLE expenses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
 
 -- Drop previous policies if re-running
 DROP POLICY IF EXISTS "Allow anon read/write items" ON items;
@@ -200,6 +235,8 @@ DROP POLICY IF EXISTS "Allow anon read/write invoices" ON invoices;
 DROP POLICY IF EXISTS "Allow anon read/write purchases" ON purchases;
 DROP POLICY IF EXISTS "Allow anon read/write expenses" ON expenses;
 DROP POLICY IF EXISTS "Allow anon read/write payments" ON payments;
+DROP POLICY IF EXISTS "Allow anon read/write settings" ON settings;
+DROP POLICY IF EXISTS "Allow anon read/write profiles" ON profiles;
 
 CREATE POLICY "Allow anon read/write items" ON items FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write parties" ON parties FOR ALL TO anon USING (true) WITH CHECK (true);
@@ -207,6 +244,8 @@ CREATE POLICY "Allow anon read/write invoices" ON invoices FOR ALL TO anon USING
 CREATE POLICY "Allow anon read/write purchases" ON purchases FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write expenses" ON expenses FOR ALL TO anon USING (true) WITH CHECK (true);
 CREATE POLICY "Allow anon read/write payments" ON payments FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon read/write settings" ON settings FOR ALL TO anon USING (true) WITH CHECK (true);
+CREATE POLICY "Allow anon read/write profiles" ON profiles FOR ALL TO anon USING (true) WITH CHECK (true);
 
 -- Enable Supabase Realtime for instant multi-device live sync
 ALTER PUBLICATION supabase_realtime ADD TABLE items;
@@ -215,6 +254,7 @@ ALTER PUBLICATION supabase_realtime ADD TABLE invoices;
 ALTER PUBLICATION supabase_realtime ADD TABLE purchases;
 ALTER PUBLICATION supabase_realtime ADD TABLE expenses;
 ALTER PUBLICATION supabase_realtime ADD TABLE payments;
+ALTER PUBLICATION supabase_realtime ADD TABLE settings;
 `;
 }
 
@@ -541,6 +581,17 @@ export async function pushPendingToSupabase(): Promise<{ success: boolean; pushe
       }
     });
 
+    // Check and push unsynced company / shop settings to Supabase (Requirement 2)
+    try {
+      const localCompanyList = await getAllFromStore<any>('company').catch(() => []);
+      const pendingCompany = localCompanyList.find(c => c.is_synced === false || c.isSynced === false);
+      if (pendingCompany && pendingCompany.name) {
+        const { id, is_synced, isSynced, sync_action, ...prof } = pendingCompany;
+        const setRes = await syncShopSettingsToSupabase(prof as CompanyProfile);
+        if (setRes.success) successfullyPushedCount += 1;
+      }
+    } catch {}
+
     await Promise.all(dbUpdateTasks);
 
     // Update last sync time
@@ -767,7 +818,60 @@ export async function pullFromSupabaseToIndexedDB(): Promise<{ success: boolean;
       }
     }
 
-    const totalPulled = safeItems.length + safeParties.length + safeInvoices.length + safeExpenses.length + safePayments.length;
+    // 5. Pull & Reconcile Settings (Requirement 3: Load Saved Profile from Cloud)
+    let settingsPulled = false;
+    try {
+      const remSettings = await client.from('settings').select('*').limit(1);
+      const cloudSettingsRow = remSettings.data?.[0];
+      if (cloudSettingsRow) {
+        const cloudProfile: CompanyProfile = cloudSettingsRow.data_json || {
+          name: cloudSettingsRow.name,
+          legalTradeName: cloudSettingsRow.legal_name || '',
+          phone: cloudSettingsRow.phone || '',
+          email: cloudSettingsRow.email || '',
+          gstin: cloudSettingsRow.gstin || '',
+          state: cloudSettingsRow.state || 'Maharashtra',
+          stateCode: cloudSettingsRow.state_code || '27',
+          address: cloudSettingsRow.address || '',
+          city: cloudSettingsRow.city || '',
+          pincode: cloudSettingsRow.pincode || '',
+          bankName: cloudSettingsRow.bank_name || '',
+          bankAccountNo: cloudSettingsRow.bank_account_no || '',
+          bankIfsc: cloudSettingsRow.bank_ifsc || '',
+          bankBranch: cloudSettingsRow.bank_branch || '',
+          upiId: cloudSettingsRow.upi_id || '',
+        };
+
+        if (cloudProfile.name) {
+          const db = await getDB();
+          const localComp = await getAllFromStore<any>('company').catch(() => []);
+          const isLocalUnsynced = localComp.some(c => c.is_synced === false || c.isSynced === false);
+
+          if (!isLocalUnsynced) {
+            const stores = ['company'];
+            if (db.objectStoreNames.contains('settings')) stores.push('settings');
+            if (db.objectStoreNames.contains('business_profile')) stores.push('business_profile');
+            const tx = db.transaction(stores, 'readwrite');
+            tx.objectStore('company').put({ id: 'primary', ...cloudProfile, is_synced: true, isSynced: true });
+            if (db.objectStoreNames.contains('settings')) {
+              tx.objectStore('settings').put({ id: 'primary', ...cloudProfile, is_synced: true, isSynced: true });
+            }
+            if (db.objectStoreNames.contains('business_profile')) {
+              tx.objectStore('business_profile').put({ id: 'primary', ...cloudProfile, is_synced: true, isSynced: true });
+            }
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem('vyapar_company_profile', JSON.stringify(cloudProfile));
+              localStorage.setItem('vyapar_company_profile_saved', 'true');
+            }
+            settingsPulled = true;
+          }
+        }
+      }
+    } catch (sErr) {
+      console.warn('Supabase settings pull notice:', sErr);
+    }
+
+    const totalPulled = safeItems.length + safeParties.length + safeInvoices.length + safeExpenses.length + safePayments.length + (settingsPulled ? 1 : 0);
     return { success: true, pulledCount: totalPulled };
   } catch (err: any) {
     console.error('Supabase batch pull error:', err);
@@ -983,13 +1087,34 @@ export async function syncMutation(
         data_json: data,
         updated_at: data.createdAt || new Date().toISOString(),
       };
+    } else if ((table as string) === 'settings' || (table as string) === 'profiles') {
+      row = {
+        id: data.id || 'primary',
+        name: data.name,
+        legal_name: data.legalTradeName || null,
+        phone: data.phone || null,
+        email: data.email || null,
+        gstin: data.gstin || null,
+        state: data.state || null,
+        state_code: data.stateCode || null,
+        address: data.address || null,
+        city: data.city || null,
+        pincode: data.pincode || null,
+        bank_name: data.bankName || null,
+        bank_account_no: data.bankAccountNo || null,
+        bank_ifsc: data.bankIfsc || null,
+        bank_branch: data.bankBranch || null,
+        upi_id: data.upiId || null,
+        data_json: data,
+        updated_at: data.updatedAt || new Date().toISOString(),
+      };
     }
 
     if (row) {
       const { error } = await client.from(table).upsert(row, { onConflict: 'id' });
       if (!error) {
         // Mark local record as synced in IndexedDB
-        await putToStore(table === 'purchases' ? 'invoices' : table, {
+        await putToStore(table === 'purchases' ? 'invoices' : (table as string) === 'settings' ? 'company' : table, {
           ...data,
           is_synced: true,
           isSynced: true,
@@ -1002,6 +1127,140 @@ export async function syncMutation(
     console.warn(`Direct syncMutation failed for ${table}:`, err);
     return false;
   }
+}
+
+/**
+ * Permanently saves and syncs the shop profile / settings to Supabase cloud (Requirement 2)
+ */
+export async function syncShopSettingsToSupabase(
+  profile: CompanyProfile
+): Promise<{ success: boolean; error?: string }> {
+  if (typeof navigator !== 'undefined' && !navigator.onLine) {
+    return { success: false, error: 'ऑफलाइन (Offline): सेटिंग्स स्थानीय रूप से सुरक्षित हैं और इंटरनेट आने पर सिंक होंगी।' };
+  }
+
+  const client = getSupabaseClient();
+  if (!client) {
+    return { success: false, error: 'Supabase कॉन्फ़िगर नहीं है।' };
+  }
+
+  const settingsRow = {
+    id: 'primary',
+    name: profile.name,
+    legal_name: profile.legalTradeName || null,
+    phone: profile.phone || null,
+    email: profile.email || null,
+    gstin: profile.gstin || null,
+    state: profile.state || null,
+    state_code: profile.stateCode || null,
+    address: profile.address || null,
+    city: profile.city || null,
+    pincode: profile.pincode || null,
+    bank_name: profile.bankName || null,
+    bank_account_no: profile.bankAccountNo || null,
+    bank_ifsc: profile.bankIfsc || null,
+    bank_branch: profile.bankBranch || null,
+    upi_id: profile.upiId || null,
+    data_json: profile,
+    updated_at: new Date().toISOString(),
+  };
+
+  try {
+    // 1. Upsert to 'settings' table
+    const res = await client.from('settings').upsert([settingsRow], { onConflict: 'id' });
+    // 2. Also upsert to 'profiles' table for compatibility
+    await Promise.resolve(client.from('profiles').upsert([settingsRow], { onConflict: 'id' })).catch(() => {});
+
+    if (res.error) {
+      console.warn('Supabase settings upsert error:', res.error);
+      return { success: false, error: res.error.message };
+    }
+
+    // Mark as synced in local IndexedDB
+    try {
+      const db = await getDB();
+      const stores = ['company'];
+      if (db.objectStoreNames.contains('settings')) stores.push('settings');
+      if (db.objectStoreNames.contains('business_profile')) stores.push('business_profile');
+      const tx = db.transaction(stores, 'readwrite');
+      tx.objectStore('company').put({ id: 'primary', ...profile, is_synced: true, isSynced: true });
+      if (db.objectStoreNames.contains('settings')) {
+        tx.objectStore('settings').put({ id: 'primary', ...profile, is_synced: true, isSynced: true });
+      }
+      if (db.objectStoreNames.contains('business_profile')) {
+        tx.objectStore('business_profile').put({ id: 'primary', ...profile, is_synced: true, isSynced: true });
+      }
+    } catch {}
+
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'क्लाउड सिंक विफल' };
+  }
+}
+
+/**
+ * Loads the saved shop profile from Supabase cloud (Requirement 3)
+ */
+export async function pullShopSettingsFromSupabase(): Promise<CompanyProfile | null> {
+  const client = getSupabaseClient();
+  if (!client) return null;
+
+  try {
+    let cloudData: any = null;
+    const res1 = await client.from('settings').select('*').eq('id', 'primary').maybeSingle();
+    if (res1.data) {
+      cloudData = res1.data;
+    } else {
+      const res2 = await client.from('profiles').select('*').eq('id', 'primary').maybeSingle();
+      if (res2.data) {
+        cloudData = res2.data;
+      }
+    }
+
+    if (cloudData) {
+      const profile: CompanyProfile = cloudData.data_json || {
+        name: cloudData.name || '',
+        legalTradeName: cloudData.legal_name || '',
+        phone: cloudData.phone || '',
+        email: cloudData.email || '',
+        gstin: cloudData.gstin || '',
+        state: cloudData.state || 'Maharashtra',
+        stateCode: cloudData.state_code || '27',
+        address: cloudData.address || '',
+        city: cloudData.city || '',
+        pincode: cloudData.pincode || '',
+        bankName: cloudData.bank_name || '',
+        bankAccountNo: cloudData.bank_account_no || '',
+        bankIfsc: cloudData.bank_ifsc || '',
+        bankBranch: cloudData.bank_branch || '',
+        upiId: cloudData.upi_id || '',
+        terms: [],
+      };
+
+      if (profile.name) {
+        const db = await getDB();
+        const stores = ['company'];
+        if (db.objectStoreNames.contains('settings')) stores.push('settings');
+        if (db.objectStoreNames.contains('business_profile')) stores.push('business_profile');
+        const tx = db.transaction(stores, 'readwrite');
+        tx.objectStore('company').put({ id: 'primary', ...profile, is_synced: true, isSynced: true });
+        if (db.objectStoreNames.contains('settings')) {
+          tx.objectStore('settings').put({ id: 'primary', ...profile, is_synced: true, isSynced: true });
+        }
+        if (db.objectStoreNames.contains('business_profile')) {
+          tx.objectStore('business_profile').put({ id: 'primary', ...profile, is_synced: true, isSynced: true });
+        }
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem('vyapar_company_profile', JSON.stringify(profile));
+          localStorage.setItem('vyapar_company_profile_saved', 'true');
+        }
+        return profile;
+      }
+    }
+  } catch (err) {
+    console.warn('Error pulling shop settings from Supabase:', err);
+  }
+  return null;
 }
 
 /**

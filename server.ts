@@ -582,26 +582,71 @@ Extract:
    - Unit Purchase Rate / Net Rate (CRITICAL RULE): If bill has MRP and Discount %, Net Rate = MRP - (MRP * Discount / 100). For example, if MRP is 1000 and discount is 40%, unitPrice MUST BE 600 (not 1000). Cross-check with Taxable Amount = Quantity * unitPrice.
    - GST % (0, 5, 12, 18, 28). If CGST 9% + SGST 9% is shown, return 18.
 
-Return ONLY structured JSON conforming strictly to the provided responseSchema.`,
+Return ONLY valid, minified JSON without any explanatory text, markdown formatting, or preamble. Conforming strictly to the provided responseSchema.`,
         },
       ],
       config: {
         responseMimeType: 'application/json',
         responseSchema,
+        maxOutputTokens: 8192,
       },
     });
 
-    const text = response.text;
-    if (!text) {
-      throw new Error('Gemini Vision API ने कोई डेटा वापस नहीं किया।');
+    const rawText = response.text;
+    if (!rawText || !rawText.trim()) {
+      return res.status(422).json({
+        success: false,
+        error: 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।',
+      });
     }
 
-    const parsedData = JSON.parse(text);
+    // Step 1: Strip Markdown backticks and extraneous wrappers (Requirement 1)
+    const cleanJsonText = rawText.replace(/```json/gi, '').replace(/```/g, '').trim();
+
+    // Step 2: Extract from first '{' to last '}'
+    const jsonStart = cleanJsonText.indexOf('{');
+    const jsonEnd = cleanJsonText.lastIndexOf('}');
+
+    let validJsonString = cleanJsonText;
+    if (jsonStart !== -1 && jsonEnd !== -1 && jsonEnd >= jsonStart) {
+      validJsonString = cleanJsonText.slice(jsonStart, jsonEnd + 1);
+    }
+
+    // Step 3: Crash-Proof Error Handling with try...catch (Requirement 3)
+    let parsedData: any;
+    try {
+      parsedData = JSON.parse(validJsonString);
+    } catch (parseErr) {
+      console.warn('Initial JSON.parse failed on AI output, attempting cleanup repair:', parseErr);
+      try {
+        // Attempt repairing trailing commas or small syntax anomalies
+        const trimmed = validJsonString.replace(/,\s*([}\]])/g, '$1');
+        parsedData = JSON.parse(trimmed);
+      } catch (finalParseErr) {
+        console.error('Failed to parse AI bill scan JSON:', finalParseErr);
+        return res.status(422).json({
+          success: false,
+          error: 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।',
+        });
+      }
+    }
+
+    if (!parsedData || typeof parsedData !== 'object' || !Array.isArray(parsedData.items)) {
+      return res.status(422).json({
+        success: false,
+        error: 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।',
+      });
+    }
+
     return res.json({ success: true, data: parsedData });
   } catch (err: any) {
     console.error('Error in /api/ai/scan-bill:', err);
+    const isJsonOrIncomplete = /json|unexpected end|syntaxerror|parse/i.test(err.message || '');
     return res.status(500).json({ 
-      error: 'AI OCR बिल स्कैन में त्रुटि: ' + (err.message || 'त्रुटि हुई') 
+      success: false,
+      error: isJsonOrIncomplete 
+        ? 'बिल का डेटा अधूरा प्राप्त हुआ, कृपया साफ़ फोटो लें या दोबारा स्कैन करें।'
+        : ('AI OCR बिल स्कैन में समस्या: ' + (err.message || 'त्रुटि हुई')),
     });
   }
 });

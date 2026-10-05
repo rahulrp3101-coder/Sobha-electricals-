@@ -35,6 +35,10 @@ export interface CompanyProfile {
   upiId: string;
   invoicePrefix: string;
   terms: string[];
+  updatedAt?: string;
+  createdAt?: string;
+  is_synced?: boolean;
+  isSynced?: boolean;
 }
 
 export interface Party {

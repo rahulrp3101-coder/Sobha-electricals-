@@ -8,7 +8,7 @@ import { CompanyProfile, Item, Party, Invoice, PaymentTransaction, Expense, Sync
 import { DEFAULT_COMPANY, INITIAL_ITEMS, INITIAL_PARTIES, INITIAL_INVOICES, INITIAL_PAYMENTS, INITIAL_EXPENSES } from './defaultData';
 
 const DB_NAME = 'VyaparPro_OfflineDB_v2';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbInstance: IDBDatabase | null = null;
 
@@ -71,9 +71,15 @@ export async function getDB(): Promise<IDBDatabase> {
         expStore.createIndex('is_synced', 'is_synced', { unique: false });
       }
 
-      // 7. Company Profile Store
+      // 7. Company & Settings Profile Stores (Requirement 2: 'settings' or 'business_profile')
       if (!db.objectStoreNames.contains('company')) {
         db.createObjectStore('company', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('settings')) {
+        db.createObjectStore('settings', { keyPath: 'id' });
+      }
+      if (!db.objectStoreNames.contains('business_profile')) {
+        db.createObjectStore('business_profile', { keyPath: 'id' });
       }
 
       // 8. Offline Sync Queue Store
@@ -97,33 +103,192 @@ export async function getDB(): Promise<IDBDatabase> {
   });
 }
 
+/**
+ * Seeds initial demo items on very first launch.
+ * Requirement 1: Disable Re-seeding. Once user saves custom settings or initializes the database,
+ * DEFAULT_COMPANY is never re-seeded and never overwrites user's real business data.
+ */
 async function seedInitialDataIfEmpty(db: IDBDatabase): Promise<void> {
   return new Promise((resolve) => {
-    const tx = db.transaction(['items', 'parties', 'invoices', 'payments', 'expenses', 'company'], 'readonly');
-    const itemStore = tx.objectStore('items');
-    const countReq = itemStore.count();
-
-    countReq.onsuccess = () => {
-      if (countReq.result === 0) {
-        // Database is empty, seed initial data
-        const writeTx = db.transaction(['items', 'parties', 'invoices', 'payments', 'expenses', 'company'], 'readwrite');
-        
-        INITIAL_ITEMS.forEach(i => writeTx.objectStore('items').put({ ...i, is_synced: true, isSynced: true }));
-        INITIAL_PARTIES.forEach(p => writeTx.objectStore('parties').put({ ...p, is_synced: true, isSynced: true }));
-        INITIAL_INVOICES.forEach(inv => writeTx.objectStore('invoices').put({ ...inv, is_synced: true, isSynced: true }));
-        INITIAL_PAYMENTS.forEach(pay => writeTx.objectStore('payments').put({ ...pay, is_synced: true, isSynced: true }));
-        INITIAL_EXPENSES.forEach(e => writeTx.objectStore('expenses').put({ ...e, is_synced: true, isSynced: true }));
-        writeTx.objectStore('company').put({ id: 'primary', ...DEFAULT_COMPANY });
-
-        writeTx.oncomplete = () => resolve();
-        writeTx.onerror = () => resolve();
-      } else {
+    // 1. If user already saved their shop profile or seeding has occurred, strictly skip
+    if (typeof localStorage !== 'undefined') {
+      const isProfileSaved = localStorage.getItem('vyapar_company_profile_saved') === 'true';
+      const isSeedDone = localStorage.getItem('vyapar_initial_seed_done') === 'true';
+      if (isProfileSaved || isSeedDone) {
         resolve();
+        return;
       }
+    }
+
+    const tx = db.transaction(['items', 'parties', 'invoices', 'payments', 'expenses', 'company'], 'readonly');
+    const compStore = tx.objectStore('company');
+    const compReq = compStore.get('primary');
+
+    compReq.onsuccess = () => {
+      // If company record already exists, NEVER seed default company!
+      const hasExistingCompany = Boolean(compReq.result && compReq.result.name);
+
+      const itemStore = tx.objectStore('items');
+      const countReq = itemStore.count();
+
+      countReq.onsuccess = () => {
+        if (countReq.result === 0 && !hasExistingCompany) {
+          // Strictly only seed once on fresh install when neither company nor items exist
+          const writeTx = db.transaction(['items', 'parties', 'invoices', 'payments', 'expenses', 'company'], 'readwrite');
+          
+          INITIAL_ITEMS.forEach(i => writeTx.objectStore('items').put({ ...i, is_synced: true, isSynced: true }));
+          INITIAL_PARTIES.forEach(p => writeTx.objectStore('parties').put({ ...p, is_synced: true, isSynced: true }));
+          INITIAL_INVOICES.forEach(inv => writeTx.objectStore('invoices').put({ ...inv, is_synced: true, isSynced: true }));
+          INITIAL_PAYMENTS.forEach(pay => writeTx.objectStore('payments').put({ ...pay, is_synced: true, isSynced: true }));
+          INITIAL_EXPENSES.forEach(e => writeTx.objectStore('expenses').put({ ...e, is_synced: true, isSynced: true }));
+          
+          // Seed default company only on virgin install
+          writeTx.objectStore('company').put({ id: 'primary', ...DEFAULT_COMPANY, is_synced: true, isSynced: true });
+          
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('vyapar_initial_seed_done', 'true');
+          }
+
+          writeTx.oncomplete = () => resolve();
+          writeTx.onerror = () => resolve();
+        } else {
+          if (typeof localStorage !== 'undefined') {
+            localStorage.setItem('vyapar_initial_seed_done', 'true');
+          }
+          resolve();
+        }
+      };
+
+      countReq.onerror = () => resolve();
     };
 
-    countReq.onerror = () => resolve();
+    compReq.onerror = () => resolve();
   });
+}
+
+/**
+ * Permanently saves the Shop / Business profile to IndexedDB ('settings', 'company', 'business_profile')
+ * and queues it for Supabase cloud synchronization. (Requirement 2)
+ */
+export async function saveCompanyProfile(profile: CompanyProfile): Promise<CompanyProfile> {
+  const db = await getDB();
+  const cleanProfile: CompanyProfile = {
+    ...profile,
+    updatedAt: new Date().toISOString(),
+  };
+
+  // 1. Immediately cache in localStorage for instant 0ms reload
+  if (typeof localStorage !== 'undefined') {
+    try {
+      localStorage.setItem('vyapar_company_profile', JSON.stringify(cleanProfile));
+      localStorage.setItem('vyapar_company_profile_saved', 'true');
+      localStorage.setItem('vyapar_initial_seed_done', 'true');
+    } catch (e) {
+      console.warn('localStorage cache failed:', e);
+    }
+  }
+
+  // 2. Persist in IndexedDB stores ('company', 'settings', 'business_profile', 'sync_queue')
+  return new Promise((resolve, reject) => {
+    const storeNames = ['company', 'sync_queue'];
+    if (db.objectStoreNames.contains('settings')) storeNames.push('settings');
+    if (db.objectStoreNames.contains('business_profile')) storeNames.push('business_profile');
+
+    const tx = db.transaction(storeNames, 'readwrite');
+    
+    // Store in 'company'
+    const compStore = tx.objectStore('company');
+    compStore.put({ id: 'primary', ...cleanProfile, is_synced: false, isSynced: false, sync_action: 'UPDATE' });
+
+    // Store in 'settings' (Requirement 2)
+    if (db.objectStoreNames.contains('settings')) {
+      const setStore = tx.objectStore('settings');
+      setStore.put({ id: 'primary', ...cleanProfile, is_synced: false, isSynced: false, sync_action: 'UPDATE' });
+    }
+
+    // Store in 'business_profile' (Requirement 2)
+    if (db.objectStoreNames.contains('business_profile')) {
+      const bpStore = tx.objectStore('business_profile');
+      bpStore.put({ id: 'primary', ...cleanProfile, is_synced: false, isSynced: false, sync_action: 'UPDATE' });
+    }
+
+    // Register in sync_queue for cloud persistence
+    const queueStore = tx.objectStore('sync_queue');
+    const queueItem: SyncQueueItem = {
+      id: 'sync-settings-' + Date.now(),
+      entity: 'SETTINGS',
+      action: 'UPDATE',
+      payload: cleanProfile,
+      timestamp: Date.now(),
+      attempts: 0,
+      is_synced: false,
+      sync_action: 'UPDATE',
+    };
+    queueStore.put(queueItem);
+
+    tx.oncomplete = () => {
+      // 3. Trigger immediate cloud push to Supabase if online
+      if (typeof navigator !== 'undefined' && navigator.onLine) {
+        import('../services/supabaseService')
+          .then(({ syncShopSettingsToSupabase }) => syncShopSettingsToSupabase(cleanProfile))
+          .catch(() => {});
+      }
+      resolve(cleanProfile);
+    };
+
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
+/**
+ * Loads the saved Shop / Business profile from IndexedDB or localStorage cache. (Requirement 3)
+ * Returns the user's authentic saved data first, avoiding dummy fallback data.
+ */
+export async function getSavedCompanyProfile(): Promise<CompanyProfile | null> {
+  // 1. Check localStorage first for instant synchronous data
+  let localCached: CompanyProfile | null = null;
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const raw = localStorage.getItem('vyapar_company_profile');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.name) {
+          localCached = parsed;
+        }
+      }
+    } catch {}
+  }
+
+  try {
+    const db = await getDB();
+    const storesToCheck = ['settings', 'company', 'business_profile'];
+    for (const storeName of storesToCheck) {
+      if (db.objectStoreNames.contains(storeName)) {
+        const result = await new Promise<any>((resolve) => {
+          const tx = db.transaction(storeName, 'readonly');
+          const store = tx.objectStore(storeName);
+          const req = store.get('primary');
+          req.onsuccess = () => resolve(req.result);
+          req.onerror = () => resolve(null);
+        });
+
+        if (result && result.name) {
+          const { id, is_synced, isSynced, sync_action, ...profileData } = result;
+          if (typeof localStorage !== 'undefined') {
+            try {
+              localStorage.setItem('vyapar_company_profile', JSON.stringify(profileData));
+              localStorage.setItem('vyapar_company_profile_saved', 'true');
+            } catch {}
+          }
+          return profileData as CompanyProfile;
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Error reading company profile from IndexedDB:', err);
+  }
+
+  return localCached;
 }
 
 /* ----------------- Generic Helper Operations ----------------- */

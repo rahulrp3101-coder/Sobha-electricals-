@@ -23,7 +23,7 @@ import {
   generateSupabaseSQLSchema,
   SupabaseConfig
 } from '../../services/supabaseService';
-import { getPendingSyncCount } from '../../db/indexedDB';
+import { getPendingSyncCount, getSavedCompanyProfile } from '../../db/indexedDB';
 
 interface ShopProfileSettingsProps {
   company: CompanyProfile;
@@ -42,7 +42,29 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
 }) => {
   const [formData, setFormData] = useState<CompanyProfile>({ ...company });
   const [isSavedToast, setIsSavedToast] = useState(false);
+  const [saveAlertMessage, setSaveAlertMessage] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+
+  // Requirement 3: Load saved profile on mount and when company prop updates
+  useEffect(() => {
+    if (company && company.name) {
+      setFormData({ ...company });
+    }
+  }, [company]);
+
+  useEffect(() => {
+    const loadSaved = async () => {
+      try {
+        const saved = await getSavedCompanyProfile();
+        if (saved && saved.name) {
+          setFormData(saved);
+        }
+      } catch (err) {
+        console.warn('Error loading saved profile in settings:', err);
+      }
+    };
+    loadSaved();
+  }, []);
 
   // Security & Password Change Form State
   const [currentPassword, setCurrentPassword] = useState('');
@@ -249,12 +271,17 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsSaving(true);
+    setSaveAlertMessage(null);
     try {
       await onSaveCompany(formData);
+      setSaveAlertMessage('दुकान का विवरण सफलतापूर्वक सेव हो गया!');
       setIsSavedToast(true);
-      setTimeout(() => setIsSavedToast(false), 3500);
-    } catch (err) {
+      setTimeout(() => {
+        setIsSavedToast(false);
+      }, 5000);
+    } catch (err: any) {
       console.error('Failed to save company settings', err);
+      setSaveAlertMessage('त्रुटि: ' + (err.message || 'सेव करने में समस्या आई'));
     } finally {
       setIsSaving(false);
     }
@@ -287,11 +314,11 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
         )}
       </div>
 
-      {/* Success Toast */}
-      {isSavedToast && (
-        <div className="bg-emerald-50 border border-emerald-300 text-emerald-800 p-3.5 rounded-xl flex items-center gap-2.5 text-xs sm:text-sm font-semibold shadow-xs animate-in fade-in duration-200">
-          <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-          <span>दुकान की जानकारी और GST सेटिंग्स सफलतापूर्वक सेव हो गई हैं!</span>
+      {/* Success Alert Banner (Requirement 2: स्पष्ट सक्सेस अलर्ट) */}
+      {(saveAlertMessage || isSavedToast) && (
+        <div className="bg-emerald-50 border-2 border-emerald-500 text-emerald-900 p-4 rounded-2xl flex items-center gap-3 text-xs sm:text-sm font-bold shadow-xs animate-in fade-in duration-200">
+          <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+          <span>{saveAlertMessage || 'दुकान का विवरण सफलतापूर्वक सेव हो गया!'}</span>
         </div>
       )}
 
@@ -876,11 +903,17 @@ export const ShopProfileSettings: React.FC<ShopProfileSettingsProps> = ({
         </div>
 
         {/* Submit Bar */}
-        <div className="flex items-center justify-end gap-3 pt-2">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+          {saveAlertMessage && (
+            <div className="text-emerald-700 text-xs sm:text-sm font-bold flex items-center gap-1.5 bg-emerald-50 border border-emerald-300 px-3.5 py-2 rounded-xl">
+              <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+              <span>{saveAlertMessage}</span>
+            </div>
+          )}
           <button
             type="submit"
             disabled={isSaving}
-            className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs sm:text-sm font-bold transition shadow-xs flex items-center justify-center gap-2"
+            className="w-full sm:w-auto px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs sm:text-sm font-bold transition shadow-xs flex items-center justify-center gap-2 ml-auto"
           >
             <Save className="w-4 h-4" />
             <span>{isSaving ? 'सेव हो रहा है...' : 'दुकान की जानकारी सेव करें (Save Settings)'}</span>
