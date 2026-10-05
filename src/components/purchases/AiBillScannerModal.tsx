@@ -288,28 +288,51 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
 }`;
 
       let responseText = '';
-      const model = genAI.getGenerativeModel(
-        {
+      try {
+        const model = genAI.getGenerativeModel({
           model: 'gemini-1.5-flash',
           generationConfig: {
             responseMimeType: 'application/json',
             temperature: 0.1,
             maxOutputTokens: 8192,
           },
-        },
-        { apiVersion: 'v1beta' }
-      );
+        });
 
-      const result = await model.generateContent([
-        {
-          inlineData: {
-            mimeType: cleanMimeType,
-            data: cleanBase64,
+        const result = await model.generateContent([
+          {
+            inlineData: {
+              mimeType: cleanMimeType,
+              data: cleanBase64,
+            },
           },
-        },
-        ocrPrompt,
-      ]);
-      responseText = result.response.text();
+          ocrPrompt,
+        ]);
+        responseText = result.response.text();
+      } catch (err: any) {
+        console.warn('gemini-1.5-flash call issue, checking for 404 fallback:', err);
+        if (err?.message?.includes('404') || /404|not found/i.test(err?.message || '')) {
+          const fallbackModel = genAI.getGenerativeModel({
+            model: 'gemini-1.5-pro',
+            generationConfig: {
+              responseMimeType: 'application/json',
+              temperature: 0.1,
+              maxOutputTokens: 8192,
+            },
+          });
+          const result = await fallbackModel.generateContent([
+            {
+              inlineData: {
+                mimeType: cleanMimeType,
+                data: cleanBase64,
+              },
+            },
+            ocrPrompt,
+          ]);
+          responseText = result.response.text();
+        } else {
+          throw err;
+        }
+      }
 
       // Requirement 4: Debug log Raw OCR Response
       console.log("Raw OCR Response:", responseText);
@@ -449,6 +472,8 @@ Return ONLY valid, minified JSON without any explanatory text, markdown formatti
         userFriendlyMsg = 'सर्वर कनेक्ट नहीं हो सका। कृपया इंटरनेट कनेक्शन या नेटवर्क चेक करें।';
       } else if (/413|payload too large|फोटो बहुत बड़ी/i.test(rawMsg)) {
         userFriendlyMsg = 'सर्वर कनेक्ट नहीं हो सका या फोटो बहुत बड़ी है।';
+      } else if (/404|not found/i.test(rawMsg)) {
+        userFriendlyMsg = 'Gemini OCR मॉडल कनेक्ट नहीं हो सका (Error 404)। कृपया अपनी API Key की अनुमति जांचें।';
       } else if (/GEMINI_API_KEY|api key/i.test(rawMsg)) {
         userFriendlyMsg = 'Gemini API Key उपलब्ध नहीं है। कृपया सेटिंग्स में API Key जांचें।';
       } else if (/500|502|503|504|सर्वर एरर/i.test(rawMsg)) {
